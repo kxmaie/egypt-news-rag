@@ -393,6 +393,7 @@ _QUESTION_STOPWORDS = {
     "كم", "عدد", "اجمالي", "إجمالي", "هي", "هو", "عن", "في", "من", "علي", "الى", "التي", "الذي",
     "طب", "طيب", "لو", "سمحت", "قولي", "هات", "اعرض", "اذكر", "عاوز", "عايز",
     "واحد", "اثنين", "ثلاث", "ثلاثه", "اربع", "اربعه", "خمس", "خمسه", "ست", "سته", "سبع", "سبعه", "عشر", "عشره",
+    "تريند", "التريند", "ترند", "الترند", "تريندات", "التريندات", "ترندات", "الترندات", "رائج", "الرائج", "شائع", "الشائع", "متداول", "المتداول", "ضجة", "الضجة",
 }
 
 _ARABIC_WEEKDAYS: dict[str, int] = {
@@ -669,7 +670,7 @@ def _is_general_top_news_question(
     topic_stem: str | None = None,
     norm_q: str = "",
 ) -> bool:
-    """True when user asks for broad top news, headlines, prominent news, or most covered news with no specific sector/topic."""
+    """True when user asks for broad top news, headlines, trending news, or most covered news with no specific sector/topic."""
     if detected_gov or detected_cat or topic_stem:
         return False
     if len(q_tokens) == 0:
@@ -677,8 +678,16 @@ def _is_general_top_news_question(
     generic_words = {
         "لخص", "تلخيص", "منشور", "منشوره", "تغطيه", "اهتمام", "محلي", "محليه",
         "مواطنين", "حالي", "ابرز", "اهم", "احدث", "اخر", "خبرين", "اخبار", "احداث", "جديد",
+        "تريند", "التريند", "ترند", "الترند", "تريندات", "التريندات", "ترندات", "الترندات",
+        "رائج", "الرائج", "متداول", "المتداول", "شائع", "الشائع",
     }
-    return q_tokens.issubset(generic_words)
+    if q_tokens.issubset(generic_words):
+        return True
+    if any(w in norm_q.split() for w in ("تريند", "ترند", "التريند", "الترند", "تريندات", "التريندات", "رائج", "الرائج", "متداول", "المتداول")):
+        trend_words = {"تريند", "التريند", "ترند", "الترند", "تريندات", "التريندات", "ترندات", "الترندات", "رائج", "الرائج", "شائع", "الشائع", "متداول", "المتداول"}
+        if (q_tokens - generic_words - trend_words).issubset(set()):
+            return True
+    return False
 
 
 def _build_deterministic_stats_answer_html(
@@ -895,6 +904,8 @@ _GENERIC_QUERY_MODIFIERS = {
     "انبارح", "غدا", "غداً", "بكره", "بكرا", "الان", "الآن", "حاليا", "اخر", "آخر", "اهم", "أهم", "ابرز", "أبرز", "جديد",
     "سوق", "محافظة", "محافظه", "مصر", "تقرير", "بيان", "تصريح", "رسمي", "رسميه",
     "قسم", "قطاع", "مجال",
+    "تريند", "التريند", "ترند", "الترند", "تريندات", "التريندات", "ترندات", "الترندات",
+    "رائج", "الرائج", "شائع", "الشائع", "متداول", "المتداول", "ضجة", "الضجة",
 }
 
 
