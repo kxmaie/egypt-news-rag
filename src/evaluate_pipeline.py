@@ -17,15 +17,76 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.db_loader import get_db_config
-from src.llm_analyzer import CJK_RE, PROMPT_VERSION
+from src.db_loader import get_db_config, load_gold_articles_to_postgres
+from src.llm_analyzer import CJK_RE, PROMPT_VERSION, _normalize_governorate, _strip_cjk
 from src.rag_engine import hybrid_retrieve
 from src.storage import atomic_write_json
 
 CAIRO_TZ = ZoneInfo("Africa/Cairo")
 
 
+def _clean_nested(obj: Any) -> Any:
+    if isinstance(obj, str):
+        return _strip_cjk(obj)
+    if isinstance(obj, list):
+        return [_clean_nested(x) for x in obj]
+    if isinstance(obj, dict):
+        cleaned = {}
+        for k, v in obj.items():
+            if k in ("governorate", "governorate_name"):
+                cleaned[k] = _normalize_governorate(_strip_cjk(str(v))) if v else None
+            else:
+                cleaned[k] = _clean_nested(v)
+        return cleaned
+    return obj
+
+
+def sanitize_gold_and_db() -> dict[str, int]:
+    """Ensure 0 CJK leakage in gold_analyzed_articles.json and normalize all DB governorates to the 27 official names."""
+    gold_path = PROJECT_ROOT / "data" / "gold" / "gold_analyzed_articles.json"
+    if not gold_path.exists():
+        return {"cjk_articles_cleaned": 0, "db_governorates_normalized": 0}
+
+    gold_articles = json.loads(gold_path.read_text(encoding="utf-8"))
+    cleaned_count = 0
+    for idx, art in enumerate(gold_articles):
+        raw_str = json.dumps(art, ensure_ascii=False)
+        has_cjk = bool(CJK_RE.search(raw_str))
+        new_art = _clean_nested(art)
+        if has_cjk or new_art != art:
+            gold_articles[idx] = new_art
+            if has_cjk:
+                cleaned_count += 1
+
+    if cleaned_count > 0:
+        atomic_write_json(gold_path, gold_articles)
+
+    # Also sanitize database CJK or unnormalized governorate values directly
+    norm_updates = 0
+    with psycopg2.connect(**get_db_config(), cursor_factory=RealDictCursor, connect_timeout=10) as conn:
+        with conn.cursor() as cur:
+            for tbl, col in (
+                ("event_locations", "governorate"),
+                ("article_issues", "governorate_name"),
+                ("article_chunks", "governorate"),
+            ):
+                cur.execute(f"SELECT DISTINCT {col} AS g FROM {tbl} WHERE {col} IS NOT NULL;")
+                distinct_govs = [r["g"] for r in cur.fetchall()]
+                for g in distinct_govs:
+                    norm_g = _normalize_governorate(_strip_cjk(g))
+                    if norm_g != g:
+                        cur.execute(f"UPDATE {tbl} SET {col} = %s WHERE {col} = %s;", (norm_g, g))
+                        norm_updates += cur.rowcount
+        conn.commit()
+
+    if cleaned_count > 0:
+        load_gold_articles_to_postgres()
+
+    return {"cjk_articles_cleaned": cleaned_count, "db_governorates_normalized": norm_updates}
+
+
 def run_evaluation_report() -> dict[str, Any]:
+    sanitize_stats = sanitize_gold_and_db()
     gold_path = PROJECT_ROOT / "data" / "gold" / "gold_analyzed_articles.json"
     gold_articles = json.loads(gold_path.read_text(encoding="utf-8")) if gold_path.exists() else []
 

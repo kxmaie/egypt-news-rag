@@ -345,9 +345,10 @@ def hybrid_retrieve(
     question: str,
     governorate: str | None = None,
     category: str | None = None,
+    days: int | None = None,
     top_k: int = 6,
 ) -> list[dict[str, Any]]:
-    """Retrieve top_k relevant articles using 70% Dense Vector Similarity + 30% Arabic Lexical & Governorate Boost."""
+    """Retrieve top_k relevant articles using 65% Dense Vector Similarity + 35% Arabic Lexical & Governorate Boost."""
     detected_gov = governorate
     norm_q = _normalize_arabic_for_match(question)
     if not detected_gov:
@@ -379,6 +380,9 @@ def hybrid_retrieve(
     if category:
         clauses.append("ac.category = %s")
         params.append(category)
+    if days and int(days) > 0:
+        clauses.append("COALESCE(ac.published_at, ac.updated_at) >= NOW() - (%s * INTERVAL '1 day')")
+        params.append(int(days))
     where_sql = f"WHERE {' AND '.join(clauses)}"
 
     with psycopg2.connect(**get_db_config(), cursor_factory=RealDictCursor, connect_timeout=10) as conn:
@@ -452,6 +456,7 @@ def answer_question_with_rag(
     question: str,
     governorate: str | None = None,
     category: str | None = None,
+    days: int | None = None,
     top_k: int = 5,
 ) -> dict[str, Any]:
     """Run full Hybrid RAG: retrieve top chunks and generate a grounded Arabic answer via Qwen."""
@@ -459,6 +464,7 @@ def answer_question_with_rag(
         question=question,
         governorate=governorate,
         category=category,
+        days=days,
         top_k=top_k,
     )
     if not retrieved:

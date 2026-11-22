@@ -1098,8 +1098,18 @@ async function handleRagQuestion(questionText) {
 
   const govFilter = (document.getElementById("rag-gov-filter") || {}).value || "";
   const catFilter = (document.getElementById("rag-cat-filter") || {}).value || "";
+  const daysRaw = (document.getElementById("rag-days-filter") || {}).value || "";
+  const daysFilter = daysRaw ? parseInt(daysRaw, 10) : null;
 
-  appendRagMessage("user", q);
+  const activeScopeTags = [];
+  if (govFilter) activeScopeTags.push(`📍 ${govFilter}`);
+  if (catFilter) activeScopeTags.push(`🗂️ ${catFilter}`);
+  if (daysFilter) activeScopeTags.push(`🕒 آخر ${daysFilter} يوم`);
+  const scopePrefix = activeScopeTags.length
+    ? `<div style="font-size:11px;opacity:0.8;margin-bottom:4px;">[${activeScopeTags.join(" • ")}]</div>`
+    : "";
+
+  appendRagMessage("user", `${scopePrefix}${q}`);
   const thinkingMsg = appendRagMessage(
     "bot",
     `<span class="rag-typing"><span class="pulse-dot"></span> جاري البحث في أخبار مصر وتجهيز الإجابة...</span>`
@@ -1110,7 +1120,12 @@ async function handleRagQuestion(questionText) {
     const ragRes = await fetch("/api/rag/ask", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ question: q, governorate: govFilter || null, category: catFilter || null }),
+      body: JSON.stringify({
+        question: q,
+        governorate: govFilter || null,
+        category: catFilter || null,
+        days: daysFilter,
+      }),
     });
 
     if (ragRes.ok) {

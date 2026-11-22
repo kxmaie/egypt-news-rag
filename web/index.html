@@ -348,7 +348,7 @@
     <!-- Optional Context Filters inside Chat -->
     <div class="rag-filters-bar">
       <select id="rag-gov-filter" class="gov-select" aria-label="تحديد محافظة للسؤال">
-        <option value="">📍 كل محافظات مصر</option>
+        <option value="">📍 كل المحافظات</option>
       </select>
       <select id="rag-cat-filter" class="gov-select" aria-label="تحديد قسم للسؤال">
         <option value="">🗂️ كل الأقسام</option>
@@ -360,6 +360,13 @@
         <option value="تعليم">تعليم</option>
         <option value="مجتمع">مجتمع</option>
         <option value="تكنولوجيا">تكنولوجيا</option>
+      </select>
+      <select id="rag-days-filter" class="gov-select" aria-label="تحديد الفترة الزمنية للسؤال">
+        <option value="">🕒 كل الأوقات</option>
+        <option value="1">اليوم (24 ساعة)</option>
+        <option value="3">آخر 3 أيام</option>
+        <option value="7">آخر 7 أيام</option>
+        <option value="30">آخر 30 يومًا</option>
       </select>
     </div>
 

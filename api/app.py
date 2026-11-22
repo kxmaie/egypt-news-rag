@@ -613,6 +613,7 @@ class RagAskRequest(BaseModel):
     question: str
     governorate: str | None = None
     category: str | None = None
+    days: int | None = None
     top_k: int = 5
 
 
@@ -622,6 +623,7 @@ def rag_ask(req: RagAskRequest) -> dict[str, Any]:
         question=req.question,
         governorate=req.governorate or None,
         category=req.category or None,
+        days=req.days if (req.days and req.days > 0) else None,
         top_k=max(1, min(10, req.top_k)),
     )
 
