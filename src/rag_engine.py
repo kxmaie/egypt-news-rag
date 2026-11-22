@@ -343,11 +343,40 @@ def _dot_similarity(vec_a: list[float], vec_b: list[float]) -> float:
 
 _QUESTION_STOPWORDS = {
     "ما", "ماذا", "هل", "كيف", "اين", "متي", "امتي", "ليه", "ايه", "إيه",
-    "اهم", "أهم", "ابرز", "أبرز", "اخر", "آخر", "اخبار", "أخبار", "خبر", "اخبرا", "الاخبرا",
+    "اهم", "أهم", "ابرز", "أبرز", "اخر", "آخر", "احدث", "أحدث",
+    "اخبار", "أخبار", "خبر", "خبرين", "الخبرين", "الخبر", "اخبرا", "الاخبرا",
     "الاخبار", "الأخبار", "الوارده", "الواردة", "الموجوده", "الموجودة", "المرصوده",
+    "مقال", "مقالين", "مقالات", "عنوان", "عناوين", "حدث", "حدثين", "احداث", "الاحداث",
     "مصر", "المصريه", "المصري", "اليوم", "النهارده", "الان", "حاليا", "حول", "بشان",
     "كم", "عدد", "اجمالي", "إجمالي", "هي", "هو", "عن", "في", "من", "علي", "الى", "التي", "الذي", "اللي",
+    "طب", "طيب", "لو", "سمحت", "قولي", "هات", "اعرض", "اذكر", "عاوز", "عايز",
+    "واحد", "اثنين", "ثلاث", "ثلاثه", "اربع", "اربعه", "خمس", "خمسه", "ست", "سته", "سبع", "سبعه", "عشر", "عشره",
 }
+
+
+def _extract_requested_item_count(norm_q: str, default_k: int = 5) -> int:
+    """Detect if the user asked for a specific number of news items (e.g. 'أهم خبرين' -> 2, 'أهم 4 أخبار' -> 4)."""
+    if any(w in norm_q for w in ("خبرين", "الخبرين", "مقالين", "حدثين", "اثنين")):
+        return 2
+    if "خبر واحد" in norm_q or "اهم خبر " in f"{norm_q} ":
+        return 1
+    word_nums = {
+        "ثلاث": 3, "ثلاثه": 3,
+        "اربع": 4, "اربعه": 4,
+        "خمس": 5, "خمسه": 5,
+        "ست": 6, "سته": 6,
+        "سبع": 7, "سبعه": 7,
+        "ثمان": 8, "ثمانيه": 8,
+        "تسع": 9, "تسعه": 9,
+        "عشر": 10, "عشره": 10,
+    }
+    for w, n in word_nums.items():
+        if re.search(rf"\b{w}\b", norm_q):
+            return n
+    m = re.search(r"\b([1-9]|10)\b", norm_q)
+    if m:
+        return int(m.group(1))
+    return default_k
 
 _CATEGORY_SYNONYMS: dict[str, tuple[str, ...]] = {
     "سياسة": ("سياسه", "سياسي", "سياسيه", "السياسه", "السياسيه", "السياسي", "دبلوماس", "برلمان", "رئاس"),
@@ -469,7 +498,7 @@ def _build_deterministic_stats_answer_html(
 
 def _extract_query_tokens(question: str) -> set[str]:
     raw_tokens = _tokenize_for_grounding(question)
-    filtered = {t for t in raw_tokens if t not in _QUESTION_STOPWORDS}
+    filtered = {t for t in raw_tokens if t not in _QUESTION_STOPWORDS and not t.isdigit()}
     return filtered
 
 
@@ -716,13 +745,14 @@ def answer_question_with_rag(
                 break
     detected_cat = category or _detect_category_from_text(norm_q)
     is_stats_q = _is_count_or_stats_question(norm_q)
+    effective_k = _extract_requested_item_count(norm_q, default_k=top_k) if not is_stats_q else top_k
 
     retrieved = hybrid_retrieve(
         question=question,
         governorate=governorate,
         category=category,
         days=days,
-        top_k=top_k,
+        top_k=effective_k,
     )
     if not retrieved and not is_stats_q:
         return {
