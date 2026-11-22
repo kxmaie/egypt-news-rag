@@ -1010,7 +1010,7 @@ document.addEventListener("DOMContentLoaded", () => {
   initEgyptMap();
   loadOverview();
   loadGovernorates();
-  loadHighImpact("new");
+  loadHighImpact("all");
   loadIssues();
   loadEvents();
   loadEntities();

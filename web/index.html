@@ -65,42 +65,33 @@
           <strong>كيف تبدأ؟</strong> اختر أي محافظة من الخريطة لعرض أخبارها ومشكلاتها، أو انتقل للأسفل لتصفح أهم الأخبار القومية عالية الأثر.
         </p>
 
-        <!-- Bento KPIs with Clear Definitions & Timeframe -->
         <div class="bento-kpis" role="region" aria-label="مؤشرات الرصد الرئيسية">
           <div class="bento-kpi">
             <div class="kpi-top">
               <strong id="kpi-articles">0</strong>
-              <span class="info-pill" title="إجمالي الأخبار الفريدة بعد التنظيف وتحليلها بنموذج Qwen">ⓘ</span>
             </div>
             <span class="kpi-title">مقال محلل</span>
-            <small class="kpi-desc">ملخص ومصنف من 5 جرائد</small>
           </div>
 
           <div class="bento-kpi">
             <div class="kpi-top">
               <strong id="kpi-alerts" class="accent-amber">0</strong>
-              <span class="info-pill" title="أخبار ذات أثر قومي مرتفع، أو غطاها موقعان فأكثر، أو ترصد أزمة حرجة">ⓘ</span>
             </div>
             <span class="kpi-title">تنبيه عالي الأثر</span>
-            <small class="kpi-desc">قرار قومي أو إجماع إعلامي</small>
           </div>
 
           <div class="bento-kpi">
             <div class="kpi-top">
               <strong id="kpi-events" class="accent-teal">0</strong>
-              <span class="info-pill" title="وقائع فعلية مستخرجة من الأخبار مع تحديد المحافظة والمرحلة التنفيذية">ⓘ</span>
             </div>
             <span class="kpi-title">حدث مستخرج</span>
-            <small class="kpi-desc">محدد بالمكان والمرحلة</small>
           </div>
 
           <div class="bento-kpi">
             <div class="kpi-top">
               <strong id="kpi-issues" class="accent-rose">0</strong>
-              <span class="info-pill" title="مشكلات خدمية أو اقتصادية أو أمنية مرصودة ومصنفة حسب الخطورة">ⓘ</span>
             </div>
             <span class="kpi-title">مشكلة مرصودة</span>
-            <small class="kpi-desc">مصنفة بالقطاع والخطورة</small>
           </div>
         </div>
 
@@ -189,13 +180,11 @@
         <div class="panel-toolbar">
           <div>
             <h3>تنبيهات الأخبار عالية الأثر على مصر</h3>
-            <p class="panel-sub">معيار الاختيار: قرار قومي مرتفع الأثر، أو خبر غطاه موقعان فأكثر، أو مشكلة خدمية/أمنية حرجة (مع جودة تحليل ≥ 70%).</p>
           </div>
           <div class="filter-bar" role="group" aria-label="فلترة الأخبار عالية الأثر">
-            <button class="fbtn active" data-filter="new">عالي الأثر الحقيقي</button>
+            <button class="fbtn active" data-filter="all">الكل</button>
             <button class="fbtn" data-filter="pos">إيجابي محتمل</button>
             <button class="fbtn" data-filter="neg">سلبي محتمل</button>
-            <button class="fbtn" data-filter="all">كل التنبيهات</button>
           </div>
         </div>
         <div id="high-impact-grid" class="cards-grid"></div>
@@ -207,7 +196,6 @@
         <div class="panel-toolbar">
           <div>
             <h3>رادار المشكلات والأزمات الخدمية</h3>
-            <p class="panel-sub">مشكلات حقيقية مرصودة في الأخبار: حرج (خطر على الأرواح/محافظة) • مرتفع (يمس شريحة واسعة) • متوسط (نطاق محلي/حي).</p>
           </div>
           <div class="filter-bar" role="group" aria-label="فلترة المشكلات حسب الخطورة">
             <button class="ibtn fbtn active" data-sev="">الكل</button>
@@ -225,7 +213,6 @@
         <div class="panel-toolbar">
           <div>
             <h3>متابعة الأحداث والمشاريع حسب المرحلة</h3>
-            <p class="panel-sub">تتبع المرحلة التنفيذية لكل واقعة من الإعلان الرسمي وحتى الاكتمال.</p>
           </div>
           <div class="filter-bar" role="group" aria-label="فلترة الأحداث حسب المرحلة">
             <button class="ebtn fbtn active" data-status="">كل المراحل</button>
@@ -286,7 +273,6 @@
         <div class="panel-toolbar">
           <div>
             <h3>القصص المشتركة عبر المواقع المصرية</h3>
-            <p class="panel-sub">الأحداث التي غطتها أكثر من مؤسسة إعلامية في نفس الوقت (مؤشر موضوعي على أهمية الخبر).</p>
           </div>
         </div>
         <div id="clusters-grid" class="clusters-grid"></div>
@@ -298,7 +284,6 @@
         <div class="panel-toolbar">
           <div>
             <h3>أرشيف كل الأخبار المحللة (<span id="all-articles-total">0</span> مقال)</h3>
-            <p class="panel-sub">تصفح وابحث في جميع المقالات المسحوبة والمحللة بدون أي حد أقصى.</p>
           </div>
           <div class="filter-bar">
             <input id="all-articles-search" type="search" placeholder="ابحث في العناوين والملخصات..." class="gov-search-input" style="width: 240px;" aria-label="بحث في كل الأخبار" />
@@ -319,7 +304,7 @@
 
   <footer class="footer">
     <div class="container footer-inner">
-      <span>منصة رصد وتحليل الأخبار المصرية — متصل مباشرة بـ PostgreSQL (egypt_news_gold)</span>
+      <span>منصة رصد وتحليل الأخبار المصرية</span>
       <span>المصادر: اليوم السابع • المصري اليوم • القاهرة 24 • مصراوي • الشروق</span>
     </div>
   </footer>
