@@ -9,11 +9,15 @@ import os
 import re
 import sys
 import urllib.request
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import psycopg2
 from psycopg2.extras import RealDictCursor
+
+CAIRO_TZ = ZoneInfo("Africa/Cairo")
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
@@ -348,10 +352,83 @@ _QUESTION_STOPWORDS = {
     "الاخبار", "الأخبار", "الوارده", "الواردة", "الموجوده", "الموجودة", "المرصوده",
     "مقال", "مقالين", "مقالات", "عنوان", "عناوين", "حدث", "حدثين", "احداث", "الاحداث",
     "مصر", "المصريه", "المصري", "اليوم", "النهارده", "الان", "حاليا", "حول", "بشان",
-    "كم", "عدد", "اجمالي", "إجمالي", "هي", "هو", "عن", "في", "من", "علي", "الى", "التي", "الذي", "اللي",
+    "امبارح", "انبارح", "امس", "البارحه", "اول", "يوم", "اللي", "اللى", "فات", "الماضي", "الماضيه", "السابق",
+    "السبت", "الاحد", "الاثنين", "الثلاثاء", "الاربعاء", "الخميس", "الجمعه",
+    "يناير", "فبراير", "مارس", "ابريل", "مايو", "يونيو", "يوليو", "اغسطس", "سبتمبر", "اكتوبر", "نوفمبر", "ديسمبر",
+    "كم", "عدد", "اجمالي", "إجمالي", "هي", "هو", "عن", "في", "من", "علي", "الى", "التي", "الذي",
     "طب", "طيب", "لو", "سمحت", "قولي", "هات", "اعرض", "اذكر", "عاوز", "عايز",
     "واحد", "اثنين", "ثلاث", "ثلاثه", "اربع", "اربعه", "خمس", "خمسه", "ست", "سته", "سبع", "سبعه", "عشر", "عشره",
 }
+
+_ARABIC_WEEKDAYS: dict[str, int] = {
+    "الاثنين": 0,
+    "الثلاثاء": 1,
+    "الاربعاء": 2,
+    "الخميس": 3,
+    "الجمعه": 4,
+    "السبت": 5,
+    "الاحد": 6,
+}
+
+_ARABIC_MONTH_NAMES: dict[str, int] = {
+    "يناير": 1, "فبراير": 2, "مارس": 3, "ابريل": 4, "مايو": 5, "يونيو": 6,
+    "يوليو": 7, "اغسطس": 8, "سبتمبر": 9, "اكتوبر": 10, "نوفمبر": 11, "ديسمبر": 12,
+}
+
+
+def _extract_target_date_from_question(norm_q: str) -> str | None:
+    """Parse relative or explicit Arabic dates ('انبارح', 'اول انبارح', 'الخميس اللي فات', 'يوم 18', '2026-11-18') into YYYY-MM-DD."""
+    today = datetime.now(CAIRO_TZ).date()
+
+    # 1. Explicit ISO date YYYY-MM-DD
+    m_iso = re.search(r"\b(202\d)-(\d{1,2})-(\d{1,2})\b", norm_q)
+    if m_iso:
+        try:
+            return date(int(m_iso.group(1)), int(m_iso.group(2)), int(m_iso.group(3))).isoformat()
+        except ValueError:
+            pass
+
+    # 2. Day before yesterday ('أول امبارح' / 'اول انبارح' / 'أول أمس')
+    if any(p in norm_q for p in ("اول امبارح", "اول انبارح", "اول امس", "قبل امبارح", "قبل انبارح")):
+        return (today - timedelta(days=2)).isoformat()
+
+    # 3. Yesterday ('امبارح' / 'انبارح' / 'أمس' / 'البارحة')
+    if any(w in norm_q.split() for w in ("امبارح", "انبارح", "امس", "البارحه")):
+        return (today - timedelta(days=1)).isoformat()
+
+    # 4. Arabic Weekday ('يوم الخميس' / 'الخميس اللي فات' / 'الجمعه')
+    for day_name, target_wd in _ARABIC_WEEKDAYS.items():
+        if day_name in norm_q:
+            days_ago = (today.weekday() - target_wd) % 7
+            if days_ago == 0 and any(k in norm_q for k in ("فات", "الماضي", "السابق")):
+                days_ago = 7
+            return (today - timedelta(days=days_ago)).isoformat()
+
+    # 5. Day + Arabic Month ('18 نوفمبر' / 'يوم 18 نوفمبر')
+    for m_name, m_num in _ARABIC_MONTH_NAMES.items():
+        m_match = re.search(rf"\b(\d{{1,2}})\s+{m_name}\b", norm_q)
+        if m_match:
+            try:
+                return date(today.year, m_num, int(m_match.group(1))).isoformat()
+            except ValueError:
+                pass
+
+    # 6. Explicit day of month ('يوم 18' / 'بتاريخ 19')
+    m_day = re.search(r"\b(?:يوم|بتاريخ)\s+(\d{1,2})\b", norm_q)
+    if m_day:
+        day_num = int(m_day.group(1))
+        if 1 <= day_num <= 31:
+            try:
+                candidate = date(today.year, today.month, day_num)
+                if candidate > today:
+                    prev_month = 12 if today.month == 1 else today.month - 1
+                    prev_year = today.year - 1 if today.month == 1 else today.year
+                    candidate = date(prev_year, prev_month, day_num)
+                return candidate.isoformat()
+            except ValueError:
+                pass
+
+    return None
 
 
 def _extract_requested_item_count(norm_q: str, default_k: int = 5) -> int:
@@ -525,6 +602,7 @@ def hybrid_retrieve(
                 break
 
     detected_cat = category or _detect_category_from_text(norm_q)
+    target_date = _extract_target_date_from_question(norm_q)
     q_tokens = _extract_query_tokens(question)
     # Exclude category words from q_tokens if category was already detected so broad category queries rank by impact/recency
     if detected_cat:
@@ -533,12 +611,19 @@ def hybrid_retrieve(
 
     is_general_top = _is_general_top_news_question(q_tokens, detected_gov, detected_cat)
 
-    # Fast path for broad "ما أهم الأخبار الواردة اليوم؟" queries: return top high-impact Egyptian national alerts directly
+    # Fast path for broad "ما أهم الأخبار الواردة اليوم/امبارح/الخميس؟" queries: return top high-impact Egyptian national alerts directly
     if is_general_top:
         with psycopg2.connect(**get_db_config(), cursor_factory=RealDictCursor, connect_timeout=10) as conn:
             with conn.cursor() as cur:
+                date_clause = ""
+                alert_params: list[Any] = []
+                if target_date:
+                    date_clause = "AND (aa.published_at AT TIME ZONE 'Africa/Cairo')::date = %s::date"
+                    alert_params.append(target_date)
+                alert_params.append(top_k)
+
                 cur.execute(
-                    """
+                    f"""
                     SELECT
                         aa.id AS article_id,
                         aa.title,
@@ -556,10 +641,11 @@ def hybrid_retrieve(
                     JOIN article_chunks ac ON ac.article_id = aa.id AND ac.chunk_index = 0
                     WHERE hia.impact_level IN ('حرج', 'مرتفع')
                       AND aa.title NOT ILIKE '%%الكنيست%%'
+                      {date_clause}
                     ORDER BY aa.published_at DESC NULLS LAST, hia.confidence_score DESC
                     LIMIT %s;
                     """,
-                    (top_k,),
+                    alert_params,
                 )
                 alert_rows = cur.fetchall()
                 if alert_rows:
@@ -595,7 +681,10 @@ def hybrid_retrieve(
         # When user asks specifically about a category (e.g. "ما عدد الأخبار السياسية" or "أهم الأخبار الاقتصادية"), filter directly by that category
         clauses.append("ac.category = %s")
         params.append(category or detected_cat)
-    if days and int(days) > 0:
+    if target_date:
+        clauses.append("(ac.published_at AT TIME ZONE 'Africa/Cairo')::date = %s::date")
+        params.append(target_date)
+    elif days and int(days) > 0:
         clauses.append("COALESCE(ac.published_at, ac.updated_at) >= NOW() - (%s * INTERVAL '1 day')")
         params.append(int(days))
     where_sql = f"WHERE {' AND '.join(clauses)}"
@@ -755,8 +844,10 @@ def answer_question_with_rag(
         top_k=effective_k,
     )
     if not retrieved and not is_stats_q:
+        target_date = _extract_target_date_from_question(norm_q)
+        date_msg = f" بتاريخ <strong>{target_date}</strong>" if target_date else ""
         return {
-            "answer": "لم أجد أخبارًا مطابقة لهذا السؤال في الفلتر الحالي؛ جرّب توسيع البحث أو اختيار كل المحافظات.",
+            "answer": f"لم أجد أخبارًا مسجلة{date_msg} مطابقة لهذا السؤال؛ جرّب تاريخًا آخر أو توسيع نطاق البحث.",
             "sources": [],
             "cited_indices": [],
             "chunks_used": 0,
