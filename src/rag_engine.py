@@ -457,6 +457,49 @@ _TOPIC_KEYWORDS = {
 }
 
 
+GREETING_TRIGGERS = (
+    "ازيك", "ازيكم", "إزيك", "السلام عليكم", "سلام عليكم", "صباح الخير", "مساء الخير",
+    "مرحبا", "مرحبا بك", "هاي", "أهلا", "اهلا", "شكرا", "شكرا لك", "تسلم", "تسلم ايدك",
+    "من انت", "مين انت", "عرف نفسك", "مين صممك", "يا شات بوت", "شات بوت",
+)
+
+OUT_OF_DOMAIN_TRIGGERS = (
+    "كود", "بايثون", "جافا", "برمجة", "برمجه", "عاصمة", "عاصمه", "احسب", "معادلة", "معادله",
+    "ترجم", "ترجمة", "ترجمه", "الف قصة", "اكتب قصة", "اكتب شعر", "بيل جيتس", "ايلون ماسك",
+)
+
+AMBIGUOUS_TRIGGERS = {
+    "ايه الاخبار", "إيه الأخبار", "اخبار ايه", "أخبار إيه", "اخبار مصر", "أخبار مصر",
+    "جديد", "في جديد", "قولي خبر", "هات خبر", "اي خبر", "أي خبر",
+}
+
+
+def classify_user_intent(query: str) -> str:
+    """Classify user query into greeting, out_of_domain, ambiguous_clarification, or news_query."""
+    cleaned = re.sub(r"[^\w\s]", "", query).strip().lower()
+    cleaned = cleaned.replace("أ", "ا").replace("إ", "ا").replace("آ", "ا").replace("ة", "ه").replace("ى", "ي")
+    words = cleaned.split()
+
+    if not words:
+        return "ambiguous_clarification"
+
+    # 1. Greetings (pure greetings or short phrases)
+    if cleaned in ("ازيك", "اهلا", "مرحبا", "هاي", "السلام عليكم", "صباح الخير", "مساء الخير", "شكرا"):
+        return "greeting"
+    if any(cleaned.startswith(g) or cleaned == g for g in GREETING_TRIGGERS) and len(words) <= 6:
+        return "greeting"
+
+    # 2. Out of domain (programming, math, general trivia not concerning Egypt)
+    if any(t in cleaned for t in OUT_OF_DOMAIN_TRIGGERS) and not any(w in cleaned for w in ("مصر", "محافظ", "وزار", "حكوم")):
+        return "out_of_domain"
+
+    # 3. Ambiguous / needs clarification (single-word news query with no entity, topic, or governorate)
+    if cleaned in AMBIGUOUS_TRIGGERS or (len(words) <= 2 and words[0] in ("اخبار", "خبر", "جديد")):
+        return "ambiguous_clarification"
+
+    return "news_query"
+
+
 def _detect_all_governorates_from_text(norm_q: str) -> list[str]:
     """Detect all Egyptian governorates mentioned in query (preserving order)."""
     found: list[str] = []
@@ -919,28 +962,72 @@ def hybrid_retrieve(
                 ORDER BY {order_sql}
                 LIMIT %s;
                 """,
-                params + order_params + [max(50, int(candidate_limit))],
+                params + order_params + [max(60, int(candidate_limit))],
             )
             rows = cur.fetchall()
 
-    scored_by_article: dict[int, dict[str, Any]] = {}
+    if not rows:
+        return []
+
+    # Multi-Channel Retrieval & Reciprocal Rank Fusion (RRF with k=60)
+    # Channel 1: Dense Vector Similarity
+    scored_vec = []
     for r in rows:
         emb = r.get("embedding")
-        has_vec = bool(q_vec and emb)
-        vec_score = _dot_similarity(q_vec, emb) if has_vec else 0.0
-        c_tokens = _tokenize_for_grounding(r["chunk_text"])
-        t_tokens = _tokenize_for_grounding(r["title"])
-        lex_score = (len(q_tokens & c_tokens) / max(1, len(q_tokens))) if q_tokens else 0.0
-        title_boost = 0.22 * (len(q_tokens & t_tokens) / max(1, len(q_tokens))) if q_tokens else 0.0
-        gov_boost = 0.25 if (detected_gov and r.get("governorate") == detected_gov) else 0.0
-        cat_boost = 0.18 if (detected_cat and r.get("category") == detected_cat) else 0.0
-        topic_boost = 0.35 if (topic_stem and (topic_stem in r["chunk_text"] or topic_stem in r["title"])) else 0.0
+        sim = _dot_similarity(q_vec, emb) if (q_vec and emb) else 0.0
+        scored_vec.append((r["chunk_id"], sim))
+    scored_vec.sort(key=lambda x: x[1], reverse=True)
+    rank_vec = {cid: idx for idx, (cid, _) in enumerate(scored_vec, start=1)}
 
-        if has_vec:
-            total_score = VECTOR_WEIGHT * max(0.0, vec_score) + LEXICAL_WEIGHT * lex_score + title_boost + gov_boost + cat_boost + topic_boost
-        else:
-            total_score = lex_score + title_boost + gov_boost + cat_boost + topic_boost
+    # Channel 2: Lexical Token Overlap
+    scored_lex = []
+    for r in rows:
+        c_toks = _tokenize_for_grounding(r["chunk_text"])
+        overlap = (len(q_tokens & c_toks) / max(1, len(q_tokens))) if q_tokens else 0.0
+        scored_lex.append((r["chunk_id"], overlap))
+    scored_lex.sort(key=lambda x: x[1], reverse=True)
+    rank_lex = {cid: idx for idx, (cid, _) in enumerate(scored_lex, start=1)}
+
+    # Channel 3: Structured Metadata & Keyword Alignment
+    scored_meta = []
+    for r in rows:
+        m_score = 0.0
+        if detected_gov and r.get("governorate") == detected_gov:
+            m_score += 3.0
+        if topic_stem and (topic_stem in r["chunk_text"] or topic_stem in r["title"]):
+            m_score += 4.0
+        if detected_source and detected_source in (r.get("source_name") or ""):
+            m_score += 3.0
+        if detected_cat and r.get("category") == detected_cat:
+            m_score += 2.0
+        scored_meta.append((r["chunk_id"], m_score))
+    scored_meta.sort(key=lambda x: x[1], reverse=True)
+    rank_meta = {cid: idx for idx, (cid, _) in enumerate(scored_meta, start=1)}
+
+    # Compute Cormack RRF score: score = sum(1 / (60 + r))
+    k_rrf = 60
+    rrf_by_chunk: dict[int, float] = {}
+    for r in rows:
+        cid = r["chunk_id"]
+        rrf = (
+            (1.0 / (k_rrf + rank_vec.get(cid, 999)))
+            + (1.0 / (k_rrf + rank_lex.get(cid, 999)))
+            + (1.0 / (k_rrf + rank_meta.get(cid, 999)))
+        )
+        rrf_by_chunk[cid] = rrf
+
+    # Precision Re-ranking over top RRF candidates
+    scored_by_article: dict[int, dict[str, Any]] = {}
+    for r in rows:
+        cid = r["chunk_id"]
         aid = int(r["article_id"])
+        base_rrf = rrf_by_chunk.get(cid, 0.0)
+        t_tokens = _tokenize_for_grounding(r["title"])
+        title_align = (len(q_tokens & t_tokens) / max(1, len(q_tokens))) if q_tokens else 0.0
+        topic_match = 1.0 if (topic_stem and (topic_stem in r["chunk_text"] or topic_stem in r["title"])) else 0.0
+        gov_match = 1.0 if (detected_gov and r.get("governorate") == detected_gov) else 0.0
+
+        combined_score = (base_rrf * 10.0) + (title_align * 0.25) + (topic_match * 0.35) + (gov_match * 0.25)
 
         if aid not in scored_by_article:
             scored_by_article[aid] = {
@@ -952,12 +1039,12 @@ def hybrid_retrieve(
                 "governorate": r["governorate"],
                 "published_at": str(r["published_at"] or "")[:16],
                 "canonical_url": r["canonical_url"],
-                "score": total_score,
+                "score": combined_score,
                 "chunks": [r["chunk_text"]],
             }
         else:
             existing = scored_by_article[aid]
-            existing["score"] = max(existing["score"], total_score)
+            existing["score"] = max(existing["score"], combined_score)
             if r["chunk_text"] not in existing["chunks"]:
                 existing["chunks"].append(r["chunk_text"])
 
@@ -1016,6 +1103,30 @@ def answer_question_with_rag(
     top_k: int = 5,
 ) -> dict[str, Any]:
     """Run full Hybrid RAG: retrieve top chunks and generate a grounded Arabic answer via Qwen."""
+    # 0. Intent Gatekeeper: Route greetings, out-of-domain, or ambiguous queries instantly without DB retrieval
+    intent = classify_user_intent(question)
+    if intent == "greeting":
+        return {
+            "answer": "أهلًا بك! أنا المساعد الذكي لمنصة «رادار أخبار مصر». جاهز لمساعدتك في استعراض أحدث الأخبار المرصودة، قرارات الحكومة، ومتابعة تطورات الأحداث والخدمات في مختلف المحافظات المصرية.",
+            "sources": [],
+            "cited_indices": [],
+            "chunks_used": 0,
+        }
+    if intent == "out_of_domain":
+        return {
+            "answer": "أنا مساعد ذكي متخصص في رصد وتوثيق الأخبار والشأن المحلي المصري. يسعدني إجابتك عن أي سؤال يخص القرارات الحكومية، أخبار المحافظات، أسعار السلع، أو المشروعات التنموية في مصر.",
+            "sources": [],
+            "cited_indices": [],
+            "chunks_used": 0,
+        }
+    if intent == "ambiguous_clarification":
+        return {
+            "answer": "أهلًا بك! هل تود استعراض أبرز الأخبار العامة العاجلة لليوم في مصر، أم تبحث عن محافظة محددة (مثل القاهرة أو الإسكندرية) أو قطاع معين (كالصحة، التعليم، أو الاقتصاد)؟",
+            "sources": [],
+            "cited_indices": [],
+            "chunks_used": 0,
+        }
+
     norm_q = _normalize_arabic_for_match(question)
     detected_govs = _detect_all_governorates_from_text(norm_q)
     detected_gov = governorate or (detected_govs[0] if detected_govs else None)
