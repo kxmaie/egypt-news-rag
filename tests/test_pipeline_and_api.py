@@ -18,7 +18,14 @@ from src.llm_analyzer import (
     _normalize_governorate,
     _strip_cjk,
 )
-from src.rag_engine import _build_chunks_for_article_row, _dot_similarity, _normalize_vector, hybrid_retrieve
+from src.rag_engine import (
+    LEXICAL_WEIGHT,
+    VECTOR_WEIGHT,
+    _build_chunks_for_article_row,
+    _dot_similarity,
+    _normalize_vector,
+    hybrid_retrieve,
+)
 
 
 class TestEgyptNewsPipelineAndAPI(unittest.TestCase):
@@ -89,6 +96,8 @@ class TestEgyptNewsPipelineAndAPI(unittest.TestCase):
         self.assertEqual(len(govs), 27)
 
     def test_scoped_hybrid_rag_retrieval(self) -> None:
+        self.assertAlmostEqual(VECTOR_WEIGHT, 0.70, places=2)
+        self.assertAlmostEqual(LEXICAL_WEIGHT, 0.30, places=2)
         results = hybrid_retrieve(
             question="ما أهم أخبار الاقتصاد؟",
             category="اقتصاد",

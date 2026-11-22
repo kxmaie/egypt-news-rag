@@ -225,3 +225,9 @@ CREATE INDEX IF NOT EXISTS idx_article_chunks_article_id
 
 CREATE INDEX IF NOT EXISTS idx_article_chunks_gov_cat
     ON public.article_chunks (governorate, category);
+
+CREATE INDEX IF NOT EXISTS idx_article_chunks_published_at
+    ON public.article_chunks (published_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_article_chunks_fts
+    ON public.article_chunks USING GIN (to_tsvector('simple', chunk_text));

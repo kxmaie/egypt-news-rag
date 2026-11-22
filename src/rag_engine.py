@@ -7,12 +7,17 @@ import logging
 import math
 import os
 import re
+import sys
 import urllib.request
 from pathlib import Path
 from typing import Any
 
 import psycopg2
 from psycopg2.extras import RealDictCursor
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.db_loader import ensure_schema, get_db_config
 from src.llm_analyzer import (
@@ -220,7 +225,9 @@ def sync_rag_chunks_and_embeddings(
                     ON ae.article_id = aa.id
                 WHERE NOT EXISTS (
                     SELECT 1 FROM article_chunks ac
-                    WHERE ac.article_id = aa.id AND ac.embedding IS NOT NULL
+                    WHERE ac.article_id = aa.id
+                      AND ac.embedding IS NOT NULL
+                      AND ac.updated_at >= aa.updated_at
                 )
                 ORDER BY aa.published_at DESC NULLS LAST
                 LIMIT %s;
@@ -237,6 +244,7 @@ def sync_rag_chunks_and_embeddings(
                     staged_chunks.append(ch)
 
             # Stage 1: Persist all semantic chunks immediately (<1s)
+            # If chunk_text changed on an existing chunk, invalidate embedding (set to NULL) so Stage 2 re-embeds it.
             with conn.cursor() as cur:
                 for ch in staged_chunks:
                     cur.execute(
@@ -255,6 +263,11 @@ def sync_rag_chunks_and_embeddings(
                         VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW())
                         ON CONFLICT (article_id, chunk_index) DO UPDATE SET
                             chunk_type = EXCLUDED.chunk_type,
+                            embedding = CASE
+                                WHEN article_chunks.chunk_text IS DISTINCT FROM EXCLUDED.chunk_text
+                                THEN NULL
+                                ELSE article_chunks.embedding
+                            END,
                             chunk_text = EXCLUDED.chunk_text,
                             governorate = EXCLUDED.governorate,
                             category = EXCLUDED.category,
@@ -341,14 +354,20 @@ def _extract_query_tokens(question: str) -> set[str]:
     return filtered or raw_tokens
 
 
+VECTOR_WEIGHT = 0.70
+LEXICAL_WEIGHT = 0.30
+CANDIDATE_POOL_LIMIT = 1500
+
+
 def hybrid_retrieve(
     question: str,
     governorate: str | None = None,
     category: str | None = None,
     days: int | None = None,
     top_k: int = 6,
+    candidate_limit: int = CANDIDATE_POOL_LIMIT,
 ) -> list[dict[str, Any]]:
-    """Retrieve top_k relevant articles using 65% Dense Vector Similarity + 35% Arabic Lexical & Governorate Boost."""
+    """Retrieve top_k relevant articles using 70% Dense Vector Similarity + 30% Arabic Lexical & Metadata Boosts."""
     detected_gov = governorate
     norm_q = _normalize_arabic_for_match(question)
     if not detected_gov:
@@ -385,6 +404,22 @@ def hybrid_retrieve(
         params.append(int(days))
     where_sql = f"WHERE {' AND '.join(clauses)}"
 
+    # SQL pre-ranking so bounded candidate pool always retains lexically/geographically matching chunks
+    ts_query_terms = " | ".join(sorted(q_tokens)) if q_tokens else ""
+    order_params: list[Any] = []
+    order_exprs: list[str] = []
+    if detected_gov:
+        order_exprs.append("(CASE WHEN ac.governorate = %s THEN 1 ELSE 0 END) DESC")
+        order_params.append(detected_gov)
+    if detected_cat:
+        order_exprs.append("(CASE WHEN ac.category = %s THEN 1 ELSE 0 END) DESC")
+        order_params.append(detected_cat)
+    if ts_query_terms:
+        order_exprs.append("ts_rank_cd(to_tsvector('simple', ac.chunk_text), to_tsquery('simple', %s)) DESC")
+        order_params.append(ts_query_terms)
+    order_exprs.append("ac.published_at DESC NULLS LAST")
+    order_sql = ", ".join(order_exprs)
+
     with psycopg2.connect(**get_db_config(), cursor_factory=RealDictCursor, connect_timeout=10) as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -405,9 +440,11 @@ def hybrid_retrieve(
                     aa.canonical_url
                 FROM article_chunks ac
                 JOIN analyzed_articles aa ON aa.id = ac.article_id
-                {where_sql};
+                {where_sql}
+                ORDER BY {order_sql}
+                LIMIT %s;
                 """,
-                params,
+                params + order_params + [max(50, int(candidate_limit))],
             )
             rows = cur.fetchall()
 
@@ -424,7 +461,7 @@ def hybrid_retrieve(
         cat_boost = 0.18 if (detected_cat and r.get("category") == detected_cat) else 0.0
 
         if has_vec:
-            total_score = 0.65 * max(0.0, vec_score) + 0.35 * lex_score + title_boost + gov_boost + cat_boost
+            total_score = VECTOR_WEIGHT * max(0.0, vec_score) + LEXICAL_WEIGHT * lex_score + title_boost + gov_boost + cat_boost
         else:
             total_score = lex_score + title_boost + gov_boost + cat_boost
         aid = int(r["article_id"])

@@ -67,7 +67,7 @@ docker compose up -d
 
 ---
 
-## 3. تشغيل الواجهة التفاعلية ومحرك الـ Hybrid RAG
+## 3. تشغيل الواجهة التفاعلية ومحرك الـ Hybrid RAG (70% Vector + 30% Lexical)
 
 تأكد من تحميل موديلات Ollama المطلوبة:
 
@@ -75,6 +75,11 @@ docker compose up -d
 ollama pull qwen2.5:3b
 ollama pull paraphrase-multilingual
 ```
+
+- **آلية الاسترجاع والترتيب (`src/rag_engine.py`):**
+  1. **المرحلة الأولى (SQL Pre-Ranking & Metadata Filtering):** فلترة الـ Chunks حسب (`governorate`, `category`, `days`) وترتيب المرشحين داخل PostgreSQL باستخدام الفهرس النصي `GIN (to_tsvector('simple', chunk_text))` مع أولوية تطابق المحافظة والقسم والحداثة (`CANDIDATE_POOL_LIMIT = 1500`).
+  2. **المرحلة الثانية (Hybrid Reranking — 70% / 30%):** حساب الـ Cosine Similarity (`VECTOR_WEIGHT = 0.70`) على متجهات `paraphrase-multilingual` (768-dim) مضافًا إليه التطابق اللفظي العربي (`LEXICAL_WEIGHT = 0.30`) وتعزيز العنوان والمحافظة والقسم.
+  3. **تزامن الـ Chunks والـ Embeddings:** تراقب دالة `sync_rag_chunks_and_embeddings()` طابع التحديث `ac.updated_at >= aa.updated_at`، وعند تغيّر نص أي مقطع (`chunk_text IS DISTINCT FROM EXCLUDED.chunk_text`) يتم تصفير `embedding = NULL` وإعادة حساب المتجه تلقائيًا لضمان تطابق النص مع الـ Embedding دائمًا.
 
 ثم شغّل سيرفر FastAPI والواجهة التفاعلية:
 
