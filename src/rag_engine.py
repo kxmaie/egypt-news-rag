@@ -443,35 +443,24 @@ def _build_deterministic_stats_answer_html(
 
     if governorate and category:
         lines.append(
-            f"📊 <strong>إجمالي أخبار قسم ({category}) في محافظة {governorate}:</strong> <strong>{gov_cat_cnt} خبر</strong> "
-            f"(من إجمالي {gov_cnt} خبر مرتبط بمحافظة {governorate}، و{total_articles} مقال في قاعدة البيانات)."
+            f"📊 <strong>عدد أخبار قسم ({category}) في محافظة {governorate}:</strong> <strong>{gov_cat_cnt} خبر</strong>."
         )
     elif category:
         cat_count = cat_map.get(category, 0)
-        pct = round(100.0 * cat_count / max(1, total_articles), 1)
         lines.append(
-            f"📊 <strong>إجمالي أخبار قسم ({category}) في قاعدة البيانات:</strong> <strong>{cat_count} خبر</strong> "
-            f"(بنسبة {pct}% من إجمالي الأرشيف البالغ <strong>{total_articles} مقالًا محللًا</strong>)."
+            f"📊 <strong>عدد أخبار قسم ({category}):</strong> <strong>{cat_count} خبر</strong>."
         )
     elif governorate:
         lines.append(
-            f"📊 <strong>إجمالي الأخبار المرتبطة بمحافظة {governorate}:</strong> <strong>{gov_cnt} خبر</strong> "
-            f"(من إجمالي {total_articles} مقالًا محللًا في قاعدة البيانات)."
+            f"📊 <strong>عدد الأخبار في محافظة {governorate}:</strong> <strong>{gov_cnt} خبر</strong>."
         )
     else:
         cat_summary = " • ".join(f"<strong>{r['category']}:</strong> {r['cnt']}" for r in cat_rows)
-        src_summary = " • ".join(f"<strong>{r['source_name']}:</strong> {r['cnt']}" for r in src_rows)
-        lines.append(f"📊 <strong>إجمالي المقالات المحللة في قاعدة البيانات:</strong> <strong>{total_articles} مقال</strong>")
+        lines.append(f"📊 <strong>إجمالي الأخبار:</strong> <strong>{total_articles} خبر</strong>")
         lines.append(f"• <strong>توزيع الأقسام:</strong> {cat_summary}")
-        lines.append(f"• <strong>توزيع الصحف:</strong> {src_summary}")
-        lines.append(
-            f"• <strong>المؤشرات الذكية:</strong> {ov.get('total_alerts', 0)} تنبيه عالي الأثر • "
-            f"{ov.get('total_events', 0)} حدث مهيكل • {ov.get('total_issues', 0)} مشكلة مرصودة • "
-            f"{ov.get('multi_source_stories', 0)} قصة مشتركة بين الصحف."
-        )
 
     if retrieved_examples:
-        lines.append("<br/><strong>أحدث الأمثلة المرصودة من هذا التصنيف:</strong>")
+        lines.append("<br/><strong>أحدث الأخبار في هذا القسم:</strong>")
         for idx, item in enumerate(retrieved_examples[:4], start=1):
             lines.append(f"• <strong>[{idx}] {item['source_name']}:</strong> {item['title']}")
 
