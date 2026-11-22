@@ -344,15 +344,106 @@ def _dot_similarity(vec_a: list[float], vec_b: list[float]) -> float:
 _QUESTION_STOPWORDS = {
     "ما", "ماذا", "هل", "كيف", "اين", "متي", "امتي", "ليه", "ايه", "إيه",
     "اهم", "أهم", "ابرز", "أبرز", "اخر", "آخر", "اخبار", "أخبار", "خبر",
-    "مصر", "المصريه", "المصري", "اليوم", "الان", "حاليا", "حول", "بشان",
-    "هي", "هو", "عن", "في", "من", "علي", "الى", "التي", "الذي", "اللي",
+    "الاخبار", "الأخبار", "الوارده", "الواردة", "الموجوده", "الموجودة", "المرصوده",
+    "مصر", "المصريه", "المصري", "اليوم", "النهارده", "الان", "حاليا", "حول", "بشان",
+    "كم", "عدد", "اجمالي", "إجمالي", "هي", "هو", "عن", "في", "من", "علي", "الى", "التي", "الذي", "اللي",
 }
+
+_CATEGORY_SYNONYMS: dict[str, tuple[str, ...]] = {
+    "سياسة": ("سياسه", "سياسي", "سياسيه", "السياسه", "السياسيه", "السياسي", "دبلوماس", "برلمان", "رئاس"),
+    "اقتصاد": ("اقتصاد", "اقتصادي", "اقتصاديه", "الاقتصاد", "الاقتصاديه", "الاقتصادي", "بورصه", "بنوك", "استثمار", "اسعار", "ذهب", "دولار"),
+    "صحة": ("صحه", "صحي", "صحيه", "الصحه", "الصحيه", "مستشفي", "اطباء", "علاج", "ادويه"),
+    "حوادث": ("حوادث", "حادث", "امني", "امنيه", "الامنيه", "شرطه", "داخليه", "مباحث", "قضائ", "محكمه", "نيابه"),
+    "رياضة": ("رياضه", "رياضي", "رياضيه", "الرياضه", "الرياضيه", "كره", "اهلي", "زمالك", "منتخب", "دوري"),
+    "تعليم": ("تعليم", "تعليمي", "تعليميه", "التعليم", "التعليميه", "جامعه", "مدارس", "طلاب", "امتحانات"),
+    "مجتمع": ("مجتمع", "مجتمعي", "اجتماعي", "اجتماعيه", "المجتمع", "تضامن", "معاشات", "مواطنين"),
+    "تكنولوجيا": ("تكنولوجيا", "تكنولوجي", "رقمي", "رقميه", "ذكاء اصطناعي", "انترنت", "اتصالات"),
+    "فن": ("فن", "فني", "فنيه", "الفن", "الفنيه", "سينما", "مسرح", "مسلسل", "فنان"),
+}
+
+
+def _detect_category_from_text(norm_q: str) -> str | None:
+    for canonical_cat, variants in _CATEGORY_SYNONYMS.items():
+        if any(v in norm_q for v in variants):
+            return canonical_cat
+    return None
+
+
+def _is_count_or_stats_question(norm_q: str) -> bool:
+    stat_triggers = ("كم عدد", "ما عدد", "عدد الاخبار", "عدد اخبار", "كم خبر", "اجمالي عدد", "احصائيات", "كم مشكله", "ما اجمالي")
+    return any(t in norm_q for t in stat_triggers)
+
+
+def _is_general_top_news_question(q_tokens: set[str], detected_gov: str | None, detected_cat: str | None) -> bool:
+    """True when the user asks a broad question like 'ما أهم الأخبار الواردة اليوم؟' with no specific topic tokens."""
+    return len(q_tokens) == 0 and not detected_gov and not detected_cat
+
+
+def _fetch_live_db_stats_summary(governorate: str | None = None, category: str | None = None) -> str:
+    """Query PostgreSQL for exact article/category/alert/issue counts to ground statistical questions."""
+    with psycopg2.connect(**get_db_config(), cursor_factory=RealDictCursor, connect_timeout=10) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    (SELECT COUNT(*) FROM analyzed_articles) AS total_articles,
+                    (SELECT COUNT(*) FROM high_impact_alerts) AS total_alerts,
+                    (SELECT COUNT(*) FROM article_events) AS total_events,
+                    (SELECT COUNT(*) FROM article_issues) AS total_issues,
+                    (SELECT COUNT(*) FROM story_clusters WHERE unique_media_count > 1) AS multi_source_stories;
+                """
+            )
+            ov = dict(cur.fetchone() or {})
+
+            cur.execute(
+                """
+                SELECT category, COUNT(*) AS cnt
+                FROM analyzed_articles
+                GROUP BY category
+                ORDER BY cnt DESC;
+                """
+            )
+            cat_rows = [dict(r) for r in cur.fetchall()]
+
+            cur.execute(
+                """
+                SELECT source_name, COUNT(*) AS cnt
+                FROM analyzed_articles
+                GROUP BY source_name
+                ORDER BY cnt DESC;
+                """
+            )
+            src_rows = [dict(r) for r in cur.fetchall()]
+
+            gov_info = ""
+            if governorate:
+                cur.execute(
+                    """
+                    SELECT COUNT(DISTINCT article_id) AS cnt
+                    FROM article_chunks
+                    WHERE governorate = %s;
+                    """,
+                    (governorate,),
+                )
+                g_cnt = int((cur.fetchone() or {}).get("cnt", 0))
+                gov_info = f"\n- إجمالي الأخبار المرتبطة بمحافظة {governorate}: {g_cnt} خبر"
+
+    cat_str = " | ".join(f"{r['category']}: {r['cnt']} خبر" for r in cat_rows)
+    src_str = " | ".join(f"{r['source_name']}: {r['cnt']} خبر" for r in src_rows)
+    return (
+        f"إحصائيات قاعدة البيانات الرسمية اللحظية (إجمالي الأرشيف الكامل وليس فقط الأمثلة المرفقة):\n"
+        f"- إجمالي المقالات المحللة في قاعدة البيانات: {ov.get('total_articles', 0)} مقال\n"
+        f"- توزيع الأخبار حسب القسم: ({cat_str})\n"
+        f"- توزيع الأخبار حسب الصحيفة: ({src_str})\n"
+        f"- إجمالي الأخبار القومية عالية الأثر: {ov.get('total_alerts', 0)} تنبيه | الأحداث المهيكلة: {ov.get('total_events', 0)} حدث | المشكلات المرصودة: {ov.get('total_issues', 0)} مشكلة | القصص المشتركة بين الصحف: {ov.get('multi_source_stories', 0)} قصة"
+        f"{gov_info}"
+    )
 
 
 def _extract_query_tokens(question: str) -> set[str]:
     raw_tokens = _tokenize_for_grounding(question)
     filtered = {t for t in raw_tokens if t not in _QUESTION_STOPWORDS}
-    return filtered or raw_tokens
+    return filtered
 
 
 VECTOR_WEIGHT = 0.70
@@ -377,12 +468,60 @@ def hybrid_retrieve(
                 detected_gov = g_name
                 break
 
-    detected_cat = category
-    if not detected_cat:
-        for c_name in ("اقتصاد", "سياسة", "صحة", "حوادث", "رياضة", "تعليم", "مجتمع", "تكنولوجيا", "فن"):
-            if _normalize_arabic_for_match(c_name) in norm_q:
-                detected_cat = c_name
-                break
+    detected_cat = category or _detect_category_from_text(norm_q)
+    q_tokens = _extract_query_tokens(question)
+    # Exclude category words from q_tokens if category was already detected so broad category queries rank by impact/recency
+    if detected_cat:
+        cat_variants = set(_CATEGORY_SYNONYMS.get(detected_cat, ()))
+        q_tokens = {t for t in q_tokens if t not in cat_variants}
+
+    is_general_top = _is_general_top_news_question(q_tokens, detected_gov, detected_cat)
+
+    # Fast path for broad "ما أهم الأخبار الواردة اليوم؟" queries: return top high-impact Egyptian national alerts directly
+    if is_general_top:
+        with psycopg2.connect(**get_db_config(), cursor_factory=RealDictCursor, connect_timeout=10) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT
+                        aa.id AS article_id,
+                        aa.title,
+                        aa.summary_generated,
+                        aa.source_name,
+                        aa.category,
+                        aa.published_at,
+                        aa.canonical_url,
+                        ac.governorate,
+                        ac.chunk_text,
+                        hia.alert_reason,
+                        hia.confidence_score
+                    FROM high_impact_alerts hia
+                    JOIN analyzed_articles aa ON aa.canonical_url = hia.canonical_url
+                    JOIN article_chunks ac ON ac.article_id = aa.id AND ac.chunk_index = 0
+                    WHERE hia.impact_level IN ('حرج', 'مرتفع')
+                      AND aa.title NOT ILIKE '%%الكنيست%%'
+                    ORDER BY aa.published_at DESC NULLS LAST, hia.confidence_score DESC
+                    LIMIT %s;
+                    """,
+                    (top_k,),
+                )
+                alert_rows = cur.fetchall()
+                if alert_rows:
+                    return [
+                        {
+                            "article_id": int(r["article_id"]),
+                            "title": r["title"],
+                            "summary_generated": r["summary_generated"],
+                            "source_name": r["source_name"],
+                            "category": r["category"],
+                            "governorate": r["governorate"],
+                            "published_at": str(r["published_at"] or "")[:16],
+                            "canonical_url": r["canonical_url"],
+                            "score": 1.0,
+                            "chunks": [r["chunk_text"]],
+                        }
+                        for r in alert_rows
+                    ]
 
     q_vec: list[float] = []
     try:
@@ -390,16 +529,16 @@ def hybrid_retrieve(
         q_vec = q_vecs[0] if q_vecs else []
     except Exception:
         q_vec = []
-    q_tokens = _extract_query_tokens(question)
 
     clauses: list[str] = ["1=1"]
     params: list[Any] = []
     if governorate:
         clauses.append("ac.governorate = %s")
         params.append(governorate)
-    if category:
+    if category or (detected_cat and not q_tokens):
+        # When user asks specifically about a category (e.g. "ما عدد الأخبار السياسية" or "أهم الأخبار الاقتصادية"), filter directly by that category
         clauses.append("ac.category = %s")
-        params.append(category)
+        params.append(category or detected_cat)
     if days and int(days) > 0:
         clauses.append("COALESCE(ac.published_at, ac.updated_at) >= NOW() - (%s * INTERVAL '1 day')")
         params.append(int(days))
@@ -541,6 +680,16 @@ def answer_question_with_rag(
     top_k: int = 5,
 ) -> dict[str, Any]:
     """Run full Hybrid RAG: retrieve top chunks and generate a grounded Arabic answer via Qwen."""
+    norm_q = _normalize_arabic_for_match(question)
+    detected_gov = governorate
+    if not detected_gov:
+        for g_name in EGYPT_GOVERNORATES:
+            if _normalize_arabic_for_match(g_name) in norm_q:
+                detected_gov = g_name
+                break
+    detected_cat = category or _detect_category_from_text(norm_q)
+    is_stats_q = _is_count_or_stats_question(norm_q)
+
     retrieved = hybrid_retrieve(
         question=question,
         governorate=governorate,
@@ -548,13 +697,17 @@ def answer_question_with_rag(
         days=days,
         top_k=top_k,
     )
-    if not retrieved:
+    if not retrieved and not is_stats_q:
         return {
             "answer": "لم أجد أخبارًا مطابقة لهذا السؤال في الفلتر الحالي؛ جرّب توسيع البحث أو اختيار كل المحافظات.",
             "sources": [],
             "cited_indices": [],
             "chunks_used": 0,
         }
+
+    stats_block = ""
+    if is_stats_q:
+        stats_block = _fetch_live_db_stats_summary(governorate=detected_gov, category=detected_cat) + "\n\n"
 
     context_blocks = []
     for idx, item in enumerate(retrieved, start=1):
@@ -563,9 +716,9 @@ def answer_question_with_rag(
     context_str = "\n\n".join(context_blocks)
 
     user_prompt = (
-        f"<context>\n{context_str}\n</context>\n\n"
+        f"<context>\n{stats_block}{context_str}\n</context>\n\n"
         f"سؤال المستخدم: {question}\n"
-        f"أجب باللغة العربية الفصحى في نقاط واضحة بالاعتماد على الأخبار أعلاه فقط، مع وضع رقم المرجع [1] أو [2] أمام كل معلومة:"
+        f"أجب باللغة العربية الفصحى في نقاط واضحة بالاعتماد على البيانات والأخبار أعلاه فقط، مع وضع رقم المرجع [1] أو [2] أمام كل خبر مستشهد به:"
     )
 
     cfg = get_llm_config()
