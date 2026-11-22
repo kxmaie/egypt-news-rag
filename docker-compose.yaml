@@ -1,0 +1,43 @@
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: egypt_news_airflow_postgres
+    environment:
+      - POSTGRES_USER=airflow
+      - POSTGRES_PASSWORD=airflow
+      - POSTGRES_DB=airflow
+      - TZ=Africa/Cairo
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "airflow"]
+      interval: 5s
+      retries: 5
+    restart: unless-stopped
+
+  airflow:
+    image: apache/airflow:2.9.3-python3.11
+    container_name: egypt_news_airflow
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      - TZ=Africa/Cairo
+      - AIRFLOW__CORE__EXECUTOR=LocalExecutor
+      - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://airflow:airflow@postgres/airflow
+      - AIRFLOW__CORE__DEFAULT_TIMEZONE=Africa/Cairo
+      - AIRFLOW__WEBSERVER__DEFAULT_UI_TIMEZONE=Africa/Cairo
+      - AIRFLOW__CORE__LOAD_EXAMPLES=False
+      - AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION=False
+      - EGYPT_NEWS_BASE_DIR=/opt/airflow/project
+    volumes:
+      - ./dags:/opt/airflow/dags
+      - ./:/opt/airflow/project
+      - ./logs:/opt/airflow/logs
+    ports:
+      - "8085:8080"
+    command: >
+      bash -c "
+      airflow db migrate &&
+      airflow users create --username admin --firstname Egypt --lastname News --role Admin --email admin@example.com --password admin || true &&
+      (airflow webserver & airflow scheduler)
+      "
+    restart: unless-stopped

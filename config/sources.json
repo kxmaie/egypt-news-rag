@@ -1,0 +1,41 @@
+{
+  "default_settings": {
+    "request_timeout_seconds": 20,
+    "delay_between_articles_seconds": 0.2,
+    "max_articles_per_source": 0,
+    "fetch_full_article_text": true,
+    "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+  },
+  "sources": [
+    {
+      "source_name": "اليوم السابع",
+      "url": "https://www.youm7.com/Section/%D8%A3%D8%AE%D8%A8%D8%A7%D8%B1-%D8%B9%D8%A7%D8%AC%D9%84%D8%A9/65/1",
+      "type": "auto",
+      "enabled": true
+    },
+    {
+      "source_name": "مصراوي",
+      "url": "https://www.masrawy.com/rss",
+      "type": "auto",
+      "enabled": true
+    },
+    {
+      "source_name": "المصري اليوم",
+      "url": "https://www.almasryalyoum.com/",
+      "type": "auto",
+      "enabled": true
+    },
+    {
+      "source_name": "الشروق",
+      "url": "https://www.shorouknews.com/rss/",
+      "type": "auto",
+      "enabled": true
+    },
+    {
+      "source_name": "القاهرة 24",
+      "url": "https://www.cairo24.com/list/feed/rss",
+      "type": "auto",
+      "enabled": true
+    }
+  ]
+}

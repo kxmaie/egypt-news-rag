@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>رادار أخبار مصر | Egypt News Intelligence</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700;800;900&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/styles.css" />
+  <!-- Three.js & GSAP -->
+  <script src="https://unpkg.com/three@0.160.0/build/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/gsap.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/ScrollTrigger.min.js"></script>
+</head>
+<body>
+  <!-- Top Navigation -->
+  <header class="navbar">
+    <div class="brand">
+      <span class="brand-dot"></span>
+      <span class="brand-name">رادار أخبار مصر</span>
+      <span class="brand-tag">GOLD LIVE</span>
+    </div>
+    <nav class="nav-links">
+      <a href="#globe-hero">الكوكب والمحافظات</a>
+      <a href="#high-impact">عالي الأثر</a>
+      <a href="#issues-radar">رادار المشكلات</a>
+      <a href="#events-tracker">الأحداث</a>
+      <a href="#trending-entities">ترند الكيانات</a>
+      <a href="#daily-digest">النشرة اليومية</a>
+      <a href="#clusters">القصص المشتركة</a>
+    </nav>
+    <div class="nav-actions">
+      <button id="btn-reset-globe" class="btn-outline">دوران تلقائي للكوكب</button>
+      <button id="btn-zoom-egypt" class="btn-primary">توسيط القاهرة 🇪🇬</button>
+    </div>
+  </header>
+
+  <!-- Hero + 3D Interactive Globe Section -->
+  <section id="globe-hero" class="hero-section">
+    <div id="globe-canvas-wrap" class="globe-canvas-wrap">
+      <canvas id="globe-canvas"></canvas>
+      <!-- 3D Projected Arabic Governorate Labels right on the Globe -->
+      <div id="globe-labels" class="globe-labels"></div>
+      <!-- Hover Tooltip -->
+      <div id="globe-tooltip" class="globe-tooltip hidden"></div>
+    </div>
+
+    <!-- Hero Overlay Copy (fades neatly when zoomed into Egypt) -->
+    <div id="hero-overlay" class="hero-overlay">
+      <div class="hero-badge">
+        <span class="pulse-dot"></span>
+        تحديث تلقائي كل 15 دقيقة من 5 مصادر مصرية
+      </div>
+      <h1 class="hero-title">
+        رصد إخباري لمصر،<br />
+        <span>بذكاء حي ولحظي.</span>
+      </h1>
+      <p class="hero-sub">
+        تحليل فوري للأحداث والمشكلات وتأثير الأخبار على مصر — اضغط على أي محافظة على الكوكب لعرض أخبارها وأحداثها ومشكلاتها مباشرة.
+      </p>
+      <div class="hero-cta-row">
+        <button id="hero-enter-egypt" class="btn-primary btn-lg">ادخل إلى محافظات مصر</button>
+        <a href="#high-impact" class="btn-outline btn-lg">تنبيهات عالي الأثر</a>
+      </div>
+    </div>
+
+    <!-- Floating Governorate Quick Bar (bottom of hero) -->
+    <div class="gov-dock">
+      <div class="gov-dock-header">
+        <span>اختر محافظة (اضغط على النقطة المضيئة أو الاسم):</span>
+        <span id="gov-dock-hint" class="gov-dock-hint">اسحب لتدوير الكوكب • اضغط على المحافظة للتفاصيل</span>
+      </div>
+      <div id="gov-pills" class="gov-pills"></div>
+    </div>
+
+    <!-- Governorate Live Intelligence Drawer -->
+    <aside id="gov-drawer" class="gov-drawer hidden">
+      <div class="drawer-header">
+        <div>
+          <span class="drawer-eyebrow">رادار المحافظة</span>
+          <h2 id="drawer-gov-name">القاهرة</h2>
+        </div>
+        <button id="drawer-close" class="drawer-close" aria-label="إغلاق">✕</button>
+      </div>
+      <div class="drawer-stats">
+        <div class="mini-stat"><strong id="d-articles-cnt">0</strong><span>مقال</span></div>
+        <div class="mini-stat"><strong id="d-events-cnt">0</strong><span>حدث</span></div>
+        <div class="mini-stat"><strong id="d-issues-cnt">0</strong><span>مشكلة</span></div>
+      </div>
+      <div class="drawer-tabs">
+        <button class="dtab active" data-tab="articles">الأخبار</button>
+        <button class="dtab" data-tab="events">الأحداث</button>
+        <button class="dtab" data-tab="issues">المشكلات</button>
+      </div>
+      <div id="drawer-body" class="drawer-body">
+        <div class="loading-msg">جاري تحميل بيانات المحافظة...</div>
+      </div>
+    </aside>
+  </section>
+
+  <!-- Live KPI Strip -->
+  <section class="kpi-section">
+    <div class="container">
+      <div class="kpi-grid">
+        <div class="kpi-card">
+          <span class="kpi-label">المقالات المحللة (Gold)</span>
+          <strong class="kpi-num" id="kpi-articles">0</strong>
+        </div>
+        <div class="kpi-card">
+          <span class="kpi-label">التنبيهات عالية الأثر</span>
+          <strong class="kpi-num accent-amber" id="kpi-alerts">0</strong>
+        </div>
+        <div class="kpi-card">
+          <span class="kpi-label">الأحداث المستخرجة</span>
+          <strong class="kpi-num accent-teal" id="kpi-events">0</strong>
+        </div>
+        <div class="kpi-card">
+          <span class="kpi-label">المشكلات المرصودة</span>
+          <strong class="kpi-num accent-rose" id="kpi-issues">0</strong>
+        </div>
+        <div class="kpi-card">
+          <span class="kpi-label">قصص متعددة المصادر</span>
+          <strong class="kpi-num" id="kpi-clusters">0</strong>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- High Impact Alerts Radar -->
+  <section id="high-impact" class="content-section">
+    <div class="container">
+      <div class="section-head">
+        <div>
+          <span class="section-eyebrow">HIGH IMPACT RADAR</span>
+          <h2>الأخبار عالية الأثر على مصر</h2>
+        </div>
+        <div class="filter-bar">
+          <button class="fbtn active" data-filter="new">عالي الأثر الحقيقي (النظام الجديد)</button>
+          <button class="fbtn" data-filter="all">الكل</button>
+          <button class="fbtn" data-filter="pos">إيجابي محتمل</button>
+          <button class="fbtn" data-filter="neg">سلبي محتمل</button>
+        </div>
+      </div>
+      <div id="high-impact-grid" class="cards-grid">
+        <div class="loading-msg">جاري تحميل الأخبار عالية الأثر...</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 1. Issues & Sectors Radar -->
+  <section id="issues-radar" class="content-section alt-bg">
+    <div class="container">
+      <div class="section-head">
+        <div>
+          <span class="section-eyebrow">ISSUES & SECTORS RADAR</span>
+          <h2>رادار المشكلات والأزمات الخدمية</h2>
+        </div>
+        <div class="filter-bar" id="issues-filter-bar">
+          <button class="ibtn fbtn active" data-sev="">الكل</button>
+          <button class="ibtn fbtn" data-sev="حرج">حرج</button>
+          <button class="ibtn fbtn" data-sev="مرتفع">مرتفع</button>
+          <button class="ibtn fbtn" data-sev="متوسط">متوسط</button>
+        </div>
+      </div>
+      <div id="issues-grid" class="cards-grid">
+        <div class="loading-msg">جاري تحميل المشكلات المرصودة...</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 2. Events Tracker by Stage -->
+  <section id="events-tracker" class="content-section">
+    <div class="container">
+      <div class="section-head">
+        <div>
+          <span class="section-eyebrow">LIVE EVENTS TRACKER</span>
+          <h2>متابعة الأحداث والمشاريع حسب المرحلة</h2>
+        </div>
+        <div class="filter-bar" id="events-filter-bar">
+          <button class="ebtn fbtn active" data-status="">كل المراحل</button>
+          <button class="ebtn fbtn" data-status="announced">أُعلن عنه (Announced)</button>
+          <button class="ebtn fbtn" data-status="preparation">جارٍ التجهيز (Preparation)</button>
+          <button class="ebtn fbtn" data-status="ongoing">قيد التنفيذ (Ongoing)</button>
+          <button class="ebtn fbtn" data-status="completed">مكتمل (Completed)</button>
+        </div>
+      </div>
+      <div id="events-grid" class="cards-grid">
+        <div class="loading-msg">جاري تحميل الأحداث...</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 3. Trending Entities -->
+  <section id="trending-entities" class="content-section alt-bg">
+    <div class="container">
+      <div class="section-head">
+        <div>
+          <span class="section-eyebrow">TRENDING ENTITIES</span>
+          <h2>أكثر الشخصيات والجهات والمشروعات تداولًا</h2>
+        </div>
+        <div class="filter-bar" id="entities-filter-bar">
+          <button class="entbtn fbtn active" data-etype="">الكل</button>
+          <button class="entbtn fbtn" data-etype="شخص">شخصيات</button>
+          <button class="entbtn fbtn" data-etype="مؤسسة">مؤسسات وجهات</button>
+          <button class="entbtn fbtn" data-etype="مشروع">مشروعات</button>
+          <button class="entbtn fbtn" data-etype="دولة">دول</button>
+        </div>
+      </div>
+      <div id="entities-cloud" class="entities-cloud">
+        <div class="loading-msg">جاري تحميل الكيانات الأكثر تداولًا...</div>
+      </div>
+      <div id="entity-articles-box" class="entity-articles-box hidden">
+        <div class="entity-box-head">
+          <h3 id="entity-box-title">الأخبار المرتبطة</h3>
+          <button id="entity-box-close" class="drawer-close">✕</button>
+        </div>
+        <div id="entity-articles-list" class="cards-grid"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 4. Daily Digest Snapshot -->
+  <section id="daily-digest" class="content-section">
+    <div class="container">
+      <div class="section-head">
+        <div>
+          <span class="section-eyebrow">DAILY EXECUTIVE DIGEST</span>
+          <h2>النشرة اليومية المختصرة (آخر 24 ساعة)</h2>
+        </div>
+        <div id="digest-meta" class="digest-meta"></div>
+      </div>
+      <div id="digest-categories" class="digest-cats"></div>
+      <div class="digest-cols">
+        <div class="digest-col">
+          <h3 class="digest-col-title accent-teal">أهم الأخبار الإيجابية لمصر</h3>
+          <div id="digest-pos-list" class="digest-list"></div>
+        </div>
+        <div class="digest-col">
+          <h3 class="digest-col-title accent-rose">أهم الأخبار السلبية / التحديات</h3>
+          <div id="digest-neg-list" class="digest-list"></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Multi-Source Story Clusters -->
+  <section id="clusters" class="content-section alt-bg">
+    <div class="container">
+      <div class="section-head">
+        <div>
+          <span class="section-eyebrow">CROSS-SOURCE CLUSTERING</span>
+          <h2>القصص المشتركة عبر المواقع المصرية</h2>
+        </div>
+      </div>
+      <div id="clusters-grid" class="clusters-grid">
+        <div class="loading-msg">جاري تحميل القصص المجمعة...</div>
+      </div>
+    </div>
+  </section>
+
+  <footer class="footer">
+    <div class="container footer-inner">
+      <span>منصة رصد وتحليل الأخبار المصرية — متصل مباشرة بـ PostgreSQL (egypt_news_gold)</span>
+      <span>Three.js + GSAP + FastAPI</span>
+    </div>
+  </footer>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
