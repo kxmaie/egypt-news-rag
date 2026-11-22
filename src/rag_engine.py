@@ -431,6 +431,11 @@ def _extract_target_date_from_question(norm_q: str) -> str | None:
     if any(w in norm_q.split() for w in ("امبارح", "انبارح", "امس", "البارحه")):
         return (today - timedelta(days=1)).isoformat()
 
+    # 4. Today ('النهارده' / 'اليوم' / 'هذا اليوم')
+    clean_words = norm_q.split()
+    if any(w in clean_words for w in ("النهارده", "النهاردة", "النهاردا")) or ("اليوم" in clean_words and "سوق" not in clean_words):
+        return today.isoformat()
+
     # 4. Arabic Weekday ('يوم الخميس' / 'الخميس اللي فات' / 'الجمعه')
     for day_name, target_wd in _ARABIC_WEEKDAYS.items():
         if day_name in norm_q:
@@ -671,79 +676,95 @@ def _is_general_top_news_question(
 def _build_deterministic_stats_answer_html(
     governorate: str | None = None,
     category: str | None = None,
+    target_date: str | None = None,
     retrieved_examples: list[dict[str, Any]] | None = None,
 ) -> str:
     """Build an exact, 100% accurate HTML answer directly from PostgreSQL for count/statistics queries."""
     with psycopg2.connect(**get_db_config(), cursor_factory=RealDictCursor, connect_timeout=10) as conn:
         with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT
-                    (SELECT COUNT(*) FROM analyzed_articles) AS total_articles,
-                    (SELECT COUNT(*) FROM high_impact_alerts) AS total_alerts,
-                    (SELECT COUNT(*) FROM article_events) AS total_events,
-                    (SELECT COUNT(*) FROM article_issues) AS total_issues,
-                    (SELECT COUNT(*) FROM story_clusters WHERE unique_media_count > 1) AS multi_source_stories;
-                """
-            )
-            ov = dict(cur.fetchone() or {})
+            date_filter = ""
+            date_params: list[Any] = []
+            if target_date:
+                date_filter = "WHERE (published_at AT TIME ZONE 'Africa/Cairo')::date = %s::date"
+                date_params.append(target_date)
 
             cur.execute(
-                """
+                f"""
+                SELECT
+                    COUNT(*) AS total_articles
+                FROM analyzed_articles
+                {date_filter};
+                """,
+                date_params,
+            )
+            total_articles = int((cur.fetchone() or {}).get("total_articles", 0))
+
+            cur.execute(
+                f"""
                 SELECT category, COUNT(*) AS cnt
                 FROM analyzed_articles
+                {date_filter}
                 GROUP BY category
                 ORDER BY cnt DESC;
-                """
+                """,
+                date_params,
             )
             cat_rows = [dict(r) for r in cur.fetchall()]
             cat_map = {r["category"]: int(r["cnt"]) for r in cat_rows}
 
-            cur.execute(
-                """
-                SELECT source_name, COUNT(*) AS cnt
-                FROM analyzed_articles
-                GROUP BY source_name
-                ORDER BY cnt DESC;
-                """
-            )
-            src_rows = [dict(r) for r in cur.fetchall()]
-
             gov_cnt = 0
             gov_cat_cnt = 0
             if governorate:
+                gov_date_clause = "AND (aa.published_at AT TIME ZONE 'Africa/Cairo')::date = %s::date" if target_date else ""
+                g_params: list[Any] = [governorate]
+                if target_date:
+                    g_params.append(target_date)
                 cur.execute(
-                    "SELECT COUNT(DISTINCT article_id) AS cnt FROM article_chunks WHERE governorate = %s;",
-                    (governorate,),
+                    f"""
+                    SELECT COUNT(DISTINCT ac.article_id) AS cnt
+                    FROM article_chunks ac
+                    JOIN analyzed_articles aa ON aa.id = ac.article_id
+                    WHERE ac.governorate = %s {gov_date_clause};
+                    """,
+                    g_params,
                 )
                 gov_cnt = int((cur.fetchone() or {}).get("cnt", 0))
                 if category:
+                    g_cat_params: list[Any] = [governorate, category]
+                    if target_date:
+                        g_cat_params.append(target_date)
                     cur.execute(
-                        "SELECT COUNT(DISTINCT article_id) AS cnt FROM article_chunks WHERE governorate = %s AND category = %s;",
-                        (governorate, category),
+                        f"""
+                        SELECT COUNT(DISTINCT ac.article_id) AS cnt
+                        FROM article_chunks ac
+                        JOIN analyzed_articles aa ON aa.id = ac.article_id
+                        WHERE ac.governorate = %s AND ac.category = %s {gov_date_clause};
+                        """,
+                        g_cat_params,
                     )
                     gov_cat_cnt = int((cur.fetchone() or {}).get("cnt", 0))
 
-    total_articles = int(ov.get("total_articles", 0))
     lines: list[str] = []
+    date_title = f" بتاريخ <strong>{target_date}</strong>" if target_date else ""
 
     if governorate and category:
         lines.append(
-            f"📊 <strong>عدد أخبار قسم ({category}) في محافظة {governorate}:</strong> <strong>{gov_cat_cnt} خبر</strong>."
+            f"📊 <strong>عدد أخبار قسم ({category}) في محافظة {governorate}{date_title}:</strong> <strong>{gov_cat_cnt} خبر</strong>."
         )
     elif category:
         cat_count = cat_map.get(category, 0)
         lines.append(
-            f"📊 <strong>عدد أخبار قسم ({category}):</strong> <strong>{cat_count} خبر</strong>."
+            f"📊 <strong>عدد أخبار قسم ({category}){date_title}:</strong> <strong>{cat_count} خبر</strong>."
         )
     elif governorate:
         lines.append(
-            f"📊 <strong>عدد الأخبار في محافظة {governorate}:</strong> <strong>{gov_cnt} خبر</strong>."
+            f"📊 <strong>عدد الأخبار في محافظة {governorate}{date_title}:</strong> <strong>{gov_cnt} خبر</strong>."
         )
     else:
-        cat_summary = " • ".join(f"<strong>{r['category']}:</strong> {r['cnt']}" for r in cat_rows)
-        lines.append(f"📊 <strong>إجمالي الأخبار:</strong> <strong>{total_articles} خبر</strong>")
-        lines.append(f"• <strong>توزيع الأقسام:</strong> {cat_summary}")
+        cat_summary = " • ".join(f"<strong>{r['category']}:</strong> {r['cnt']}" for r in cat_rows) if cat_rows else "لا توجد أخبار مسجلة لهذا التاريخ"
+        lines.append(f"📊 <strong>إجمالي الأخبار{date_title}:</strong> <strong>{total_articles} خبر</strong>")
+        if cat_summary:
+            lines.append(f"• <strong>توزيع الأقسام:</strong> {cat_summary}")
 
     if retrieved_examples:
         lines.append("<br/><strong>أحدث الأخبار في هذا القسم:</strong>")
@@ -1239,9 +1260,11 @@ def answer_question_with_rag(
 
     # For count / statistics queries, return exact deterministic PostgreSQL counts directly (no 3B counting error)
     if is_stats_q:
+        target_date = _extract_target_date_from_question(norm_q)
         html_answer = _build_deterministic_stats_answer_html(
             governorate=detected_gov,
             category=detected_cat,
+            target_date=target_date,
             retrieved_examples=retrieved,
         )
         cited_indices = list(range(1, min(5, len(retrieved)) + 1))
