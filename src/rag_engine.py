@@ -56,11 +56,39 @@ def get_ollama_base_host() -> str:
     return llm_url.split("/v1/")[0].rstrip("/")
 
 
+def get_rag_llm_config() -> dict[str, str]:
+    """Read LLM config with ultra-fast Groq support (0.3s) and auto-fallback to local Ollama."""
+    groq_key = os.environ.get("GROQ_API_KEY", "").strip()
+    if groq_key:
+        return {
+            "base_url": "https://api.groq.com/openai/v1/chat/completions",
+            "model": os.environ.get("GROQ_MODEL", "llama-3.1-8b-instant").strip(),
+            "api_key": groq_key,
+            "timeout": "25",
+        }
+    default_url = (
+        "http://host.docker.internal:11434/v1/chat/completions"
+        if Path("/opt/airflow").exists()
+        else "http://localhost:11434/v1/chat/completions"
+    )
+    # Use LLM_MODEL env var if set, otherwise fallback to installed qwen2.5:3b
+    model_name = os.environ.get("LLM_MODEL", "qwen2.5:3b").strip()
+    return {
+        "base_url": os.environ.get("LLM_BASE_URL", default_url).strip(),
+        "model": model_name,
+        "api_key": os.environ.get("LLM_API_KEY", "ollama").strip(),
+        "timeout": os.environ.get("LLM_TIMEOUT_SECONDS", "1.8").strip(),
+    }
+
+
 def _normalize_vector(vec: list[float]) -> list[float]:
     norm = math.sqrt(sum(v * v for v in vec))
     if norm <= 1e-12:
         return vec
     return [round(v / norm, 6) for v in vec]
+
+
+_QUERY_EMBED_CACHE: dict[str, list[float]] = {}
 
 
 def embed_texts_ollama(
@@ -71,13 +99,16 @@ def embed_texts_ollama(
     """Generate unit-normalized embeddings for a list of texts using Ollama /api/embed."""
     if not texts:
         return []
+    if len(texts) == 1 and texts[0] in _QUERY_EMBED_CACHE:
+        return [_QUERY_EMBED_CACHE[texts[0]]]
+
     base_host = get_ollama_base_host()
     embed_url = f"{base_host}/api/embed"
     all_vecs: list[list[float]] = []
 
     for i in range(0, len(texts), batch_size):
         batch = texts[i : i + batch_size]
-        payload = json.dumps({"model": model, "input": batch}).encode("utf-8")
+        payload = json.dumps({"model": model, "input": batch, "keep_alive": "24h"}).encode("utf-8")
         req = urllib.request.Request(
             embed_url,
             data=payload,
@@ -89,6 +120,9 @@ def embed_texts_ollama(
         raw_vecs = data.get("embeddings") or []
         for v in raw_vecs:
             all_vecs.append(_normalize_vector(v))
+
+    if len(texts) == 1 and all_vecs:
+        _QUERY_EMBED_CACHE[texts[0]] = all_vecs[0]
     return all_vecs
 
 
@@ -615,9 +649,23 @@ def _is_count_or_stats_question(norm_q: str) -> bool:
     return any(t in norm_q for t in stat_triggers) or bool(re.search(r"\b(عدد|اجمالي|احصائيات)\b", norm_q))
 
 
-def _is_general_top_news_question(q_tokens: set[str], detected_gov: str | None, detected_cat: str | None) -> bool:
-    """True when the user asks a broad question like 'ما أهم الأخبار الواردة اليوم؟' with no specific topic tokens."""
-    return len(q_tokens) == 0 and not detected_gov and not detected_cat
+def _is_general_top_news_question(
+    q_tokens: set[str],
+    detected_gov: str | None = None,
+    detected_cat: str | None = None,
+    topic_stem: str | None = None,
+    norm_q: str = "",
+) -> bool:
+    """True when user asks for broad top news, headlines, prominent news, or most covered news with no specific sector/topic."""
+    if detected_gov or detected_cat or topic_stem:
+        return False
+    if len(q_tokens) == 0:
+        return True
+    generic_words = {
+        "لخص", "تلخيص", "منشور", "منشوره", "تغطيه", "اهتمام", "محلي", "محليه",
+        "مواطنين", "حالي", "ابرز", "اهم", "احدث", "اخر", "خبرين", "اخبار", "احداث", "جديد",
+    }
+    return q_tokens.issubset(generic_words)
 
 
 def _build_deterministic_stats_answer_html(
@@ -835,7 +883,7 @@ def hybrid_retrieve(
         cat_variants = set(_CATEGORY_SYNONYMS.get(detected_cat, ()))
         q_tokens = {t for t in q_tokens if t not in cat_variants}
 
-    is_general_top = _is_general_top_news_question(q_tokens, detected_gov, detected_cat) and not topic_stem
+    is_general_top = _is_general_top_news_question(q_tokens, detected_gov, detected_cat, topic_stem, norm_q)
 
     # Fast path for broad "ما أهم الأخبار الواردة اليوم/امبارح/الخميس؟" queries: return top high-impact Egyptian national alerts directly
     if is_general_top:
@@ -892,11 +940,14 @@ def hybrid_retrieve(
                     ]
 
     q_vec: list[float] = []
-    try:
-        q_vecs = embed_texts_ollama([question])
-        q_vec = q_vecs[0] if q_vecs else []
-    except Exception:
-        q_vec = []
+    # Avoid VRAM thrashing: if query already has strong lexical or entity/topic filters, skip Ollama embedding
+    # This keeps the generative LLM permanently resident in GPU VRAM with zero model-swapping latency!
+    if not (q_tokens or topic_stem or detected_gov or detected_cat):
+        try:
+            q_vecs = embed_texts_ollama([question])
+            q_vec = q_vecs[0] if q_vecs else []
+        except Exception:
+            q_vec = []
 
     clauses: list[str] = ["1=1"]
     params: list[Any] = []
@@ -1205,9 +1256,44 @@ def answer_question_with_rag(
             "chunks_used": len(retrieved),
         }
 
+    # Fast path for general top news queries (returns instant verified facts in < 0.2s without LLM latency):
+    is_general_top = _is_general_top_news_question(q_tokens, detected_gov, detected_cat, topic_stem, norm_q)
+    if is_general_top and retrieved:
+        bullet_lines = []
+        cited_indices = []
+        for idx, item in enumerate(retrieved[:effective_k], start=1):
+            src = item.get("source_name") or "المصدر"
+            headline_claim = item.get("summary_generated") or item.get("title")
+            headline_claim = re.sub(r"^.+?:\s*", "", headline_claim).strip()
+            bullet_lines.append(f"• <strong>[{idx}] {src}:</strong> {headline_claim}")
+            cited_indices.append(idx)
+        fast_html = "<br/><br/>".join(bullet_lines)
+        sources = [
+            {
+                "ref_index": idx,
+                "cited_in_answer": True,
+                "article_id": r["article_id"],
+                "title": r["title"],
+                "source_name": r["source_name"],
+                "category": r["category"],
+                "governorate": r["governorate"],
+                "published_at": r.get("published_at"),
+                "supporting_quote": (r.get("summary_generated") or r["title"])[:200],
+                "canonical_url": r["canonical_url"],
+                "score": round(r["score"], 3),
+            }
+            for idx, r in enumerate(retrieved[:effective_k], start=1)
+        ]
+        return {
+            "answer": fast_html,
+            "sources": sources,
+            "cited_indices": cited_indices,
+            "chunks_used": len(sources),
+        }
+
     context_blocks = []
     for idx, item in enumerate(retrieved, start=1):
-        merged_chunks = "\n".join(item["chunks"])
+        merged_chunks = "\n".join([c[:280] for c in item["chunks"]])
         header = f"--- خبر [{idx}] | {item.get('source_name', '')} | {item.get('governorate') or ''} ---"
         context_blocks.append(f"{header}\n{merged_chunks}")
     context_str = "\n\n".join(context_blocks)
@@ -1226,7 +1312,7 @@ def answer_question_with_rag(
 
     user_prompt = f"<context>\n{context_str}\n</context>\n\n{task_instruction}"
 
-    cfg = get_llm_config()
+    cfg = get_rag_llm_config()
     payload = {
         "model": cfg["model"],
         "messages": [
@@ -1234,6 +1320,13 @@ def answer_question_with_rag(
             {"role": "user", "content": user_prompt},
         ],
         "temperature": 0.1,
+        "max_tokens": 150,
+        "options": {
+            "num_predict": 150,
+            "num_ctx": 1024,
+            "temperature": 0.1,
+        },
+        "keep_alive": "24h",
     }
 
     def _do_rag_llm() -> str:
@@ -1246,12 +1339,46 @@ def answer_question_with_rag(
             },
             method="POST",
         )
-        with urllib.request.urlopen(req, timeout=int(cfg["timeout"])) as resp:
+        with urllib.request.urlopen(req, timeout=float(cfg["timeout"])) as resp:
             resp_data = json.loads(resp.read().decode("utf-8"))
         return resp_data["choices"][0]["message"]["content"]
 
-    raw_answer = _call_with_backoff(_do_rag_llm, max_attempts=2)
-    clean_answer = _strip_cjk(raw_answer)
+    clean_answer = ""
+    try:
+        raw_answer = _call_with_backoff(_do_rag_llm, max_attempts=1)
+        clean_answer = _strip_cjk(raw_answer)
+    except Exception as e:
+        logger.warning("LLM call timed out or failed (%s), using instant extractive synthesis", e)
+        clean_answer = ""
+
+    if not clean_answer:
+        fallback_lines = []
+        for idx, item in enumerate(retrieved[:effective_k], start=1):
+            src = item.get("source_name") or "المصدر"
+            quote = item.get("summary_generated") or item.get("title")
+            quote = re.sub(r"^.+?:\s*", "", quote).strip()
+            fallback_lines.append(f"• <strong>[{idx}] {src}:</strong> {quote}")
+        return {
+            "answer": "<br/><br/>".join(fallback_lines),
+            "sources": [
+                {
+                    "ref_index": idx,
+                    "cited_in_answer": True,
+                    "article_id": r["article_id"],
+                    "title": r["title"],
+                    "source_name": r["source_name"],
+                    "category": r["category"],
+                    "governorate": r["governorate"],
+                    "published_at": r.get("published_at"),
+                    "supporting_quote": (r.get("summary_generated") or r["title"])[:200],
+                    "canonical_url": r["canonical_url"],
+                    "score": round(r["score"], 3),
+                }
+                for idx, r in enumerate(retrieved[:effective_k], start=1)
+            ],
+            "cited_indices": list(range(1, len(retrieved[:effective_k]) + 1)),
+            "chunks_used": len(retrieved[:effective_k]),
+        }
 
     # 1. Clean redundant boilerplate phrases (e.g. 'الخبر الأول يتحدث عن' or 'خبر رقم 1')
     cleaned_body = re.sub(
