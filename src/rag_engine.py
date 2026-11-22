@@ -888,6 +888,28 @@ def _extract_query_tokens(question: str) -> set[str]:
     return filtered
 
 
+_GENERIC_QUERY_MODIFIERS = {
+    "سعر", "اسعار", "أسعار", "غلاء", "تكلفه", "تكلفة",
+    "اخبار", "أخبار", "خبر", "مستجدات", "تفاصيل", "تطورات", "احداث", "أحداث", "حدث",
+    "ايه", "إيه", "ما", "ماذا", "كام", "كم", "عن", "في", "اليوم", "النهارده", "امس", "أمس", "امبارح",
+    "انبارح", "غدا", "غداً", "بكره", "بكرا", "الان", "الآن", "حاليا", "اخر", "آخر", "اهم", "أهم", "ابرز", "أبرز", "جديد",
+    "سوق", "محافظة", "محافظه", "مصر", "تقرير", "بيان", "تصريح", "رسمي", "رسميه",
+    "قسم", "قطاع", "مجال",
+}
+
+
+def _extract_subject_stems(tokens: set[str]) -> list[str]:
+    """Extract 3+ char Arabic lexical stems for specific entities/subjects (e.g. 'الكفته' -> 'كفت')."""
+    stems: list[str] = []
+    for t in tokens:
+        clean = re.sub(r"^(?:ال|لل|بال|فال|كال)", "", t)
+        clean = re.sub(r"[ةه]$", "", clean)
+        clean = _normalize_arabic_for_match(clean)
+        if len(clean) >= 3 and clean not in stems:
+            stems.append(clean)
+    return stems
+
+
 VECTOR_WEIGHT = 0.70
 LEXICAL_WEIGHT = 0.30
 CANDIDATE_POOL_LIMIT = 1500
@@ -914,6 +936,9 @@ def hybrid_retrieve(
     target_date = _extract_target_date_from_question(norm_q) or tf_date
 
     q_tokens = _extract_query_tokens(question)
+    specific_tokens = {t for t in q_tokens if t not in _GENERIC_QUERY_MODIFIERS and len(t) > 1}
+    subject_stems = _extract_subject_stems(specific_tokens)
+
     # Exclude category and topic words from q_tokens if detected so broad category queries rank cleanly
     if detected_cat:
         cat_variants = set(_CATEGORY_SYNONYMS.get(detected_cat, ()))
@@ -1013,8 +1038,16 @@ def hybrid_retrieve(
     ts_query_terms = " | ".join(sorted(q_tokens)) if q_tokens else ""
     order_params: list[Any] = []
     order_exprs: list[str] = []
-    if topic_stem:
+    if subject_stems:
+        stem_cases = " OR ".join(["ac.chunk_text ILIKE %s OR aa.title ILIKE %s" for _ in subject_stems])
+        order_exprs.append(f"(CASE WHEN ({stem_cases}) THEN 100 ELSE 0 END) DESC")
+        for s in subject_stems:
+            order_params.extend([f"%{s}%", f"%{s}%"])
+    if topic_stem and not subject_stems:
         order_exprs.append("(CASE WHEN ac.chunk_text ILIKE %s OR aa.title ILIKE %s THEN 1 ELSE 0 END) DESC")
+        order_params.extend([f"%{topic_stem}%", f"%{topic_stem}%"])
+    elif topic_stem and subject_stems:
+        order_exprs.append("(CASE WHEN ac.chunk_text ILIKE %s OR aa.title ILIKE %s THEN 2 ELSE 0 END) DESC")
         order_params.extend([f"%{topic_stem}%", f"%{topic_stem}%"])
     if detected_gov:
         order_exprs.append("(CASE WHEN ac.governorate = %s THEN 1 ELSE 0 END) DESC")
@@ -1120,6 +1153,14 @@ def hybrid_retrieve(
         gov_match = 1.0 if (detected_gov and r.get("governorate") == detected_gov) else 0.0
 
         combined_score = (base_rrf * 10.0) + (title_align * 0.25) + (topic_match * 0.35) + (gov_match * 0.25)
+        if subject_stems:
+            c_text_norm = _normalize_arabic_for_match(r["chunk_text"])
+            title_norm = _normalize_arabic_for_match(r["title"])
+            subject_matched = any(s in c_text_norm or s in title_norm for s in subject_stems)
+            if subject_matched:
+                combined_score += 100.0
+            else:
+                combined_score -= 100.0
 
         if aid not in scored_by_article:
             scored_by_article[aid] = {
@@ -1141,6 +1182,9 @@ def hybrid_retrieve(
                 existing["chunks"].append(r["chunk_text"])
 
     ranked = sorted(scored_by_article.values(), key=lambda x: x["score"], reverse=True)
+    if subject_stems:
+        matched_articles = [r for r in ranked if r["score"] > 0]
+        return matched_articles[:top_k]
     return ranked[:top_k]
 
 
@@ -1226,6 +1270,8 @@ def answer_question_with_rag(
     topic_label, topic_stem = _detect_topic_stem(norm_q)
     is_stats_q = _is_count_or_stats_question(norm_q)
     effective_k = _extract_requested_item_count(norm_q, default_k=top_k) if not is_stats_q else top_k
+    q_tokens = _extract_query_tokens(question)
+    specific_tokens = {t for t in q_tokens if t not in _GENERIC_QUERY_MODIFIERS and len(t) > 1}
 
     # 1. Comparison count question between two governorates (e.g. 'أي محافظة لديها أخبار أكثر: القاهرة أم البحيرة؟')
     if _is_comparison_count_question(norm_q, detected_govs):
@@ -1257,6 +1303,14 @@ def answer_question_with_rag(
     if not retrieved and not is_stats_q:
         target_date = _extract_target_date_from_question(norm_q)
         date_msg = f" بتاريخ <strong>{target_date}</strong>" if target_date else ""
+        if specific_tokens:
+            sub_display = " ".join(specific_tokens)
+            return {
+                "answer": f"عذرًا، لم تتضمن الأخبار والبيانات الرسمية المرصودة مؤخرًا أي تفاصيل بشأن «{sub_display}». يمكنك الاستفسار عن أسعار السلع التموينية الأساسية أو العملات أو الذهب.",
+                "sources": [],
+                "cited_indices": [],
+                "chunks_used": 0,
+            }
         return {
             "answer": f"لم أجد أخبارًا مسجلة{date_msg} مطابقة لهذا السؤال؛ جرّب تاريخًا آخر أو توسيع نطاق البحث.",
             "sources": [],
@@ -1400,10 +1454,16 @@ def answer_question_with_rag(
 
     if not clean_answer:
         fallback_lines = []
+        is_price_q = any(w in norm_q.split() for w in ("سعر", "اسعار", "أسعار", "كام", "تكلفه", "تكلفة"))
         for idx, item in enumerate(retrieved[:effective_k], start=1):
             src = item.get("source_name") or "المصدر"
             quote = item.get("summary_generated") or item.get("title")
             quote = re.sub(r"^.+?:\s*", "", quote).strip()
+            c_text = " ".join(item.get("chunks", []) or [item.get("chunk_text", "")])
+            has_price_data = any(w in c_text or w in quote or w in item.get("title", "") for w in ("جنيه", "قرش", "شراء", "بيع", "للكيلو", "للطن", "للقرص", "سعر", "اسعار"))
+            if is_price_q and not has_price_data and specific_tokens:
+                sub_display = " ".join(specific_tokens)
+                quote = f"لم ترصد التقارير الاقتصادية مؤخرًا أسعارًا رسمية لـ «{sub_display}»، بينما تضمنت الأخبار الرقابية: {item.get('title')}"
             fallback_lines.append(f"• <strong>[{idx}] {src}:</strong> {quote}")
         return {
             "answer": "<br/><br/>".join(fallback_lines),

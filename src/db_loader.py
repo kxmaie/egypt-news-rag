@@ -35,13 +35,13 @@ def _load_env_file(env_path: Path = DEFAULT_ENV_FILE) -> None:
 
 
 def get_db_config() -> dict[str, Any]:
-    """Return PostgreSQL connection settings, defaulting to localhost outside Docker."""
+    """Return PostgreSQL connection settings, defaulting to 127.0.0.1 outside Docker to avoid Windows IPv6 resolution latency."""
     _load_env_file()
     running_in_docker = Path("/.dockerenv").exists()
-    default_host = "host.docker.internal" if running_in_docker else "localhost"
+    default_host = "host.docker.internal" if running_in_docker else "127.0.0.1"
     host = os.environ.get("GOLD_DB_HOST") or default_host
-    if not running_in_docker and host == "host.docker.internal":
-        host = "localhost"
+    if not running_in_docker and host in ("host.docker.internal", "localhost"):
+        host = "127.0.0.1"
 
     return {
         "host": host,
