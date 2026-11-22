@@ -927,26 +927,83 @@ async function loadClusters() {
     (cl) => `
       <article class="alert-card">
         <div class="badges-row">
-          <span class="badge badge-amber">${cl.unique_media_count} مواقع غطّت القصة</span>
+          <span class="badge badge-amber">${cl.unique_media_count} صحف غطّت الحدث</span>
           <span class="badge">${cl.category}</span>
           <span class="badge ${cl.egypt_impact_label.includes("إيجابي") ? "badge-pos" : cl.egypt_impact_label.includes("سلبي") ? "badge-neg" : ""}">${cl.egypt_impact_label}</span>
         </div>
         <h3>${cl.main_title}</h3>
         <p class="alert-rationale">${cl.summary}</p>
-        <div class="cluster-sources">
+        <div class="cluster-sources" style="display:flex;flex-direction:column;gap:8px;margin-top:10px;">
           ${(cl.sources || [])
             .map(
               (s) => `
-            <a class="cluster-src-link" href="${s.canonical_url}" target="_blank" rel="noopener">
-              <span>${s.source_name}: ${s.title.slice(0, 58)}...</span>
-              <span>↗</span>
-            </a>`
+            <div style="background:rgba(15,23,42,0.55);border:1px solid rgba(148,163,184,0.16);border-radius:10px;padding:10px 12px;">
+              <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:4px;flex-wrap:wrap;">
+                <strong style="color:#38bdf8;font-size:13px;">${s.source_name}</strong>
+                <div style="display:flex;gap:6px;align-items:center;font-size:11px;color:#94a3b8;">
+                  ${s.tone ? `<span class="badge" style="font-size:10.5px;padding:2px 7px;">${s.tone}</span>` : ""}
+                  ${s.event_date ? `<span>تاريخ الحدث: ${String(s.event_date).slice(0, 10)}</span>` : ""}
+                  ${s.published_at ? `<span>النشر: ${String(s.published_at).slice(0, 16).replace("T", " ")}</span>` : ""}
+                </div>
+              </div>
+              <div style="font-weight:700;font-size:13.5px;color:#f1f5f9;margin-bottom:4px;">${s.title}</div>
+              ${s.summary_generated ? `<div style="font-size:12.5px;color:#cbd5e1;line-height:1.55;margin-bottom:6px;">${s.summary_generated.slice(0, 190)}${s.summary_generated.length > 190 ? "..." : ""}</div>` : ""}
+              <a href="${s.canonical_url}" target="_blank" rel="noopener" style="font-size:12px;color:#2dd4bf;text-decoration:none;font-weight:600;">فتح تغطية ${s.source_name} ↗</a>
+            </div>`
             )
             .join("")}
         </div>
       </article>`,
-    24
+    18
   );
+}
+
+async function loadDataQuality() {
+  const overallBox = document.getElementById("quality-overall-box");
+  const grid = document.getElementById("quality-sources-grid");
+  if (!overallBox || !grid) return;
+
+  try {
+    const res = await fetch("/api/data-quality");
+    const data = await res.json();
+    const ov = data.overall || {};
+    overallBox.innerHTML = `
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:14px;">
+        <div>
+          <h4 class="bento-box-title" style="margin-bottom:4px;">ملخص اكتمال قاعدة البيانات (${(ov.total_articles || 0).toLocaleString("ar-EG")} مقال)</h4>
+          <span style="font-size:12.5px;color:#94a3b8;">آخر دورة سحب: ${data.last_scrape_cairo || "متصل"}</span>
+        </div>
+        <div style="display:flex;gap:14px;flex-wrap:wrap;">
+          <span class="badge badge-pos">اكتمال التواريخ: ${ov.date_completeness_pct ?? 100}%</span>
+          <span class="badge badge-pos">اكتمال الملخصات: ${ov.summary_completeness_pct ?? 100}%</span>
+          <span class="badge badge-amber">نجاح التحليل: ${ov.llm_success_rate_pct ?? 100}% (الأعطال: ${ov.llm_failures_total ?? 0})</span>
+          <span class="badge">تغطية الـ Embeddings: ${ov.rag_embedding_coverage_pct ?? 100}%</span>
+        </div>
+      </div>
+    `;
+
+    grid.innerHTML = (data.sources || [])
+      .map(
+        (s) => `
+      <article class="alert-card">
+        <div class="badges-row">
+          <span class="badge ${s.extraction_status === "healthy" ? "badge-pos" : "badge-amber"}">${s.extraction_status === "healthy" ? "سحب مستقر" : s.extraction_status}</span>
+          <span class="badge">${s.analyzed_total.toLocaleString("ar-EG")} مقال محلل</span>
+        </div>
+        <h3>${s.source_name}</h3>
+        <div style="display:flex;flex-direction:column;gap:6px;font-size:13px;color:#cbd5e1;margin:8px 0;">
+          <div>• وجود تاريخ نشر صالح: <strong>${s.date_completeness_pct}%</strong></div>
+          <div>• وجود ملخص كافٍ (≥ 60 حرف): <strong>${s.summary_completeness_pct}%</strong></div>
+          <div>• متوسط طول الخبر: <strong>${s.avg_word_count || "—"} كلمة</strong></div>
+          <div>• أخبار مرتبطة بتاريخ حدث صريح: <strong>${s.explicit_event_date_count}</strong></div>
+          <div>• فشل التحليل المسجل: <strong>${s.llm_failures_count} (${s.llm_failure_rate_pct}%)</strong></div>
+        </div>
+      </article>`
+      )
+      .join("");
+  } catch (err) {
+    grid.innerHTML = `<div class="loading-msg">تعذر تحميل مؤشرات الجودة.</div>`;
+  }
 }
 
 let currentArticlesCategory = "";
@@ -1016,6 +1073,7 @@ document.addEventListener("DOMContentLoaded", () => {
   loadEntities();
   loadClusters();
   loadAllArticles();
+  loadDataQuality();
 
   const motionBtn = document.getElementById("btn-toggle-motion");
   if (motionBtn) {
@@ -1071,14 +1129,17 @@ function appendRagMessage(role, htmlText, sources = []) {
   if (sources && sources.length) {
     sourcesHtml = `
       <div class="rag-sources">
-        <span class="rag-sources-title">المصادر المعتمدة (${sources.length}):</span>
+        <span class="rag-sources-title">المصادر والأدلة المقتبسة (${sources.length}):</span>
         ${sources
-          .slice(0, 4)
+          .slice(0, 5)
           .map(
-            (s) => `
-          <a class="rag-source-item" href="${s.canonical_url}" target="_blank" rel="noopener">
-            <span><strong>${s.source_name || "مصدر"}:</strong> ${(s.title || "").slice(0, 56)}...</span>
-            <span>↗</span>
+            (s, idx) => `
+          <a class="rag-source-item" href="${s.canonical_url}" target="_blank" rel="noopener" style="flex-direction:column;align-items:flex-start;gap:4px;">
+            <div style="display:flex;justify-content:space-between;width:100%;align-items:center;">
+              <span><strong>[${s.ref_index || idx + 1}] ${s.source_name || "مصدر"}${s.governorate ? " • " + s.governorate : ""}:</strong> ${(s.title || "").slice(0, 58)}...</span>
+              <span>↗</span>
+            </div>
+            ${s.supporting_quote ? `<div style="font-size:11.5px;color:#94a3b8;border-right:2px solid #2dd4bf;padding-right:6px;">"${s.supporting_quote}"</div>` : ""}
           </a>`
           )
           .join("")}

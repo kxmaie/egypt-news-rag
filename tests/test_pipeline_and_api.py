@@ -10,7 +10,14 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from api.app import RagAskRequest, get_governorates_summary, get_overview, rag_ask
+from api.app import (
+    RagAskRequest,
+    get_data_quality_metrics,
+    get_governorates_summary,
+    get_overview,
+    get_story_clusters,
+    rag_ask,
+)
 from src.llm_analyzer import (
     EGYPT_GOVERNORATES,
     _is_date_grounded,
@@ -23,7 +30,9 @@ from src.rag_engine import (
     VECTOR_WEIGHT,
     _build_chunks_for_article_row,
     _dot_similarity,
+    _extract_verbatim_supporting_quote,
     _normalize_vector,
+    _validate_inline_citations,
     hybrid_retrieve,
 )
 
@@ -108,6 +117,31 @@ class TestEgyptNewsPipelineAndAPI(unittest.TestCase):
         self.assertGreater(len(results), 0)
         for item in results:
             self.assertEqual(item["category"], "اقتصاد")
+
+    def test_citation_validation_and_verbatim_quote(self) -> None:
+        raw_ans = "تقرير عن الأسعار [1] وتفاصيل إضافية [2] ومرجع وهمي [9]."
+        validated_html, cited = _validate_inline_citations(raw_ans, max_idx=3)
+        self.assertEqual(cited, [1, 2])
+        self.assertIn("<strong>[1]</strong>", validated_html)
+        self.assertNotIn("[9]", validated_html)
+
+        item = {
+            "title": "افتتاح معرض الكتاب",
+            "summary_generated": "أعلنت هيئة الكتاب فتح باب الترشح لجوائز المعرض في الأول من ديسمبر. كما تم تحديد شروط التقديم.",
+            "chunks": [],
+        }
+        quote = _extract_verbatim_supporting_quote(item, {"ترشح", "جوائز"})
+        self.assertIn(quote, item["summary_generated"])
+
+    def test_data_quality_and_cluster_comparison_endpoints(self) -> None:
+        dq = get_data_quality_metrics()
+        self.assertIn("overall", dq)
+        self.assertIn("sources", dq)
+        self.assertGreater(len(dq["sources"]), 0)
+
+        clusters = get_story_clusters(limit=5)["clusters"]
+        self.assertGreater(len(clusters), 0)
+        self.assertIn("summary_generated", clusters[0]["sources"][0])
 
 
 if __name__ == "__main__":

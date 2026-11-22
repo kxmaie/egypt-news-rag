@@ -153,29 +153,141 @@ def run_evaluation_report() -> dict[str, Any]:
             )
             event_statuses = [dict(r) for r in cur.fetchall()]
 
-    benchmark_queries = [
-        "ما أهم أخبار الاقتصاد والاستثمار في مصر؟",
-        "ما أبرز المشكلات والأزمات الخدمية المرصودة في المحافظات؟",
-        "ما الأحداث والمشاريع الجارية في محافظة القاهرة؟",
-        "ما قرارات وزارة الصحة والمستشفيات الجديدة؟",
-        "ما أخبار الطرق والمرافق في محافظة المنوفية والشرقية؟",
+    # Golden QA Benchmark Dataset (16 realistic questions mapped to ground-truth title substrings / governorates)
+    golden_qa_benchmark = [
+        {
+            "question": "كم أسعار كرتونة البيض في محافظة كفر الشيخ اليوم؟",
+            "expected_keywords": ["أسعار البيض", "كفر الشيخ"],
+        },
+        {
+            "question": "متى تفتح هيئة الكتاب باب الترشح لجوائز معرض الكتاب في القاهرة؟",
+            "expected_keywords": ["هيئة الكتاب", "معرض الكتاب"],
+        },
+        {
+            "question": "ماذا قال الرئيس في منتدى أسوان عن خريطة الطريق الأفريقية؟",
+            "expected_keywords": ["منتدى أسوان", "خريطة طريق"],
+        },
+        {
+            "question": "ما تفاصيل ضبط سيارتين سارتا عكس الاتجاه في محافظة القليوبية؟",
+            "expected_keywords": ["عكس الاتجاه", "القليوبية"],
+        },
+        {
+            "question": "ما سبب المناشدة الإنسانية في سيوة بمحافظة مطروح أمام المستشفى المركزي؟",
+            "expected_keywords": ["سيوة", "المستشفى المركزي"],
+        },
+        {
+            "question": "كم قيمة المساعدات الإنسانية التي قدمها محافظ بورسعيد للأسر الأولى بالرعاية؟",
+            "expected_keywords": ["محافظ بورسعيد", "مساعدات إنسانية"],
+        },
+        {
+            "question": "بكم تطرح محافظة الوادي الجديد الخضروات واللحوم في منافذ باريس؟",
+            "expected_keywords": ["الوادي الجديد", "منافذ باريس"],
+        },
+        {
+            "question": "كم عدد المصابين في حوادث محافظة كفر الشيخ؟",
+            "expected_keywords": ["إصابة 6 أشخاص", "كفر الشيخ"],
+        },
+        {
+            "question": "مع من أجرى وزير الخارجية جولة نيلية في محافظة أسوان؟",
+            "expected_keywords": ["جولة نيلية", "أسوان"],
+        },
+        {
+            "question": "ما هدف التمثيل التجاري المصري بشأن الفرص التصديرية؟",
+            "expected_keywords": ["التمثيل التجارى", "الفرص التصديرية"],
+        },
+        {
+            "question": "لماذا نظم اتحاد العمال مؤتمرين عماليين في قنا وأسوان؟",
+            "expected_keywords": ["اتحاد العمال", "مؤتمرين عماليين"],
+        },
+        {
+            "question": "ماذا قال وزير الخارجية عن مشروع رفع كفاءة المحطة الكهرومائية بالسد العالي؟",
+            "expected_keywords": ["المحطة الكهرومائية", "السد العالي"],
+        },
+        {
+            "question": "ما موقف وزارة الصحة من إلغاء تكليف الأطباء حتى 2032؟",
+            "expected_keywords": ["تكليف الأطباء", "2032"],
+        },
+        {
+            "question": "ما المبادرة التي دشنها محافظ القاهرة ورئيس نادي الشمس؟",
+            "expected_keywords": ["محافظ القاهرة", "نادي الشمس"],
+        },
+        {
+            "question": "هل تمت إعادة فتح الطريق الإقليمي بالمنوفية بعد الشبورة المائية؟",
+            "expected_keywords": ["الطريق الإقليمى", "المنوفية"],
+        },
+        {
+            "question": "ما تفاصيل تطوير ورفع كفاءة الشوارع بمركز الحسينية؟",
+            "expected_keywords": ["تطوير ورفع كفاءة الشوارع", "الحسينية"],
+        },
     ]
-    rag_benchmarks = []
-    for q in benchmark_queries:
-        t0 = time.perf_counter()
-        results = hybrid_retrieve(q, top_k=5)
-        latency_ms = round((time.perf_counter() - t0) * 1000, 1)
-        rag_benchmarks.append(
-            {
-                "query": q,
-                "latency_ms": latency_ms,
-                "results_returned": len(results),
-                "top_score": round(results[0]["score"], 3) if results else 0.0,
-                "top_title": results[0]["title"] if results else None,
-            }
-        )
 
-    avg_latency_ms = round(sum(b["latency_ms"] for b in rag_benchmarks) / len(rag_benchmarks), 1)
+    rag_benchmarks = []
+    hits_at_5 = 0
+    mrr_sum = 0.0
+    recall_sum = 0.0
+
+    # Pre-resolve matching ground-truth article IDs from PostgreSQL for each golden question
+    with psycopg2.connect(**get_db_config(), cursor_factory=RealDictCursor, connect_timeout=10) as conn:
+        with conn.cursor() as cur:
+            for item in golden_qa_benchmark:
+                kw1, kw2 = item["expected_keywords"][0], item["expected_keywords"][1]
+                cur.execute(
+                    """
+                    SELECT id
+                    FROM analyzed_articles
+                    WHERE title ILIKE %s AND (title ILIKE %s OR summary_generated ILIKE %s);
+                    """,
+                    (f"%{kw1}%", f"%{kw2}%", f"%{kw2}%"),
+                )
+                relevant_ids = {int(r["id"]) for r in cur.fetchall()}
+                if not relevant_ids:
+                    cur.execute(
+                        "SELECT id FROM analyzed_articles WHERE title ILIKE %s LIMIT 5;",
+                        (f"%{kw1}%",),
+                    )
+                    relevant_ids = {int(r["id"]) for r in cur.fetchall()}
+
+                q = item["question"]
+                t0 = time.perf_counter()
+                results = hybrid_retrieve(q, top_k=5)
+                latency_ms = round((time.perf_counter() - t0) * 1000, 1)
+
+                retrieved_ids = [int(r["article_id"]) for r in results]
+                first_hit_rank = None
+                matched_count = 0
+                for idx, aid in enumerate(retrieved_ids, start=1):
+                    if aid in relevant_ids:
+                        matched_count += 1
+                        if first_hit_rank is None:
+                            first_hit_rank = idx
+
+                hit = 1 if first_hit_rank is not None else 0
+                rr = round(1.0 / first_hit_rank, 3) if first_hit_rank else 0.0
+                rec_at_5 = round(matched_count / max(1, len(relevant_ids)), 3) if relevant_ids else float(hit)
+
+                hits_at_5 += hit
+                mrr_sum += rr
+                recall_sum += rec_at_5
+
+                rag_benchmarks.append(
+                    {
+                        "query": q,
+                        "relevant_articles_in_db": len(relevant_ids),
+                        "hit_at_5": bool(hit),
+                        "first_hit_rank": first_hit_rank,
+                        "reciprocal_rank": rr,
+                        "recall_at_5": rec_at_5,
+                        "latency_ms": latency_ms,
+                        "top_score": round(results[0]["score"], 3) if results else 0.0,
+                        "top_title": results[0]["title"] if results else None,
+                    }
+                )
+
+    n_q = max(1, len(rag_benchmarks))
+    avg_latency_ms = round(sum(b["latency_ms"] for b in rag_benchmarks) / n_q, 1)
+    hit_at_5_rate = round(100.0 * hits_at_5 / n_q, 2)
+    mrr_at_5 = round(mrr_sum / n_q, 3)
+    mean_recall_at_5 = round(100.0 * recall_sum / n_q, 2)
 
     report = {
         "generated_at_cairo": datetime.now(CAIRO_TZ).isoformat(timespec="seconds"),
@@ -196,6 +308,10 @@ def run_evaluation_report() -> dict[str, Any]:
         "issue_severities_breakdown": issue_severities,
         "event_statuses_breakdown": event_statuses,
         "rag_retrieval_benchmark": {
+            "total_golden_questions": len(rag_benchmarks),
+            "hit_at_5_pct": hit_at_5_rate,
+            "recall_at_5_pct": mean_recall_at_5,
+            "mrr_at_5": mrr_at_5,
             "average_latency_ms": avg_latency_ms,
             "queries": rag_benchmarks,
         },

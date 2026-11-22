@@ -378,15 +378,118 @@ def get_story_clusters(limit: int = Query(default=200, ge=1, le=2000)) -> dict[s
         for cl in clusters:
             cur.execute(
                 """
-                SELECT source_name, title, canonical_url, tone, published_at
-                FROM story_cluster_articles
-                WHERE cluster_id = %s
-                ORDER BY published_at DESC NULLS LAST;
+                SELECT
+                    sca.source_name,
+                    sca.title,
+                    sca.canonical_url,
+                    sca.tone,
+                    sca.published_at,
+                    sca.egypt_label,
+                    aa.summary_generated,
+                    ae.event_date,
+                    ae.event_status
+                FROM story_cluster_articles sca
+                LEFT JOIN analyzed_articles aa
+                    ON aa.canonical_url = sca.canonical_url
+                LEFT JOIN article_events ae
+                    ON ae.article_id = aa.id
+                WHERE sca.cluster_id = %s
+                ORDER BY sca.published_at DESC NULLS LAST;
                 """,
                 (cl["cluster_id"],),
             )
             cl["sources"] = [dict(s) for s in cur.fetchall()]
     return {"clusters": clusters}
+
+
+@app.get("/api/data-quality")
+def get_data_quality_metrics() -> dict[str, Any]:
+    """Return empirical data completeness, scraping health, and analysis failure rates per source."""
+    import json
+
+    summary_path = PROJECT_ROOT / "data" / "latest_run_summary.json"
+    run_summary = {}
+    if summary_path.exists():
+        try:
+            run_summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        except Exception:
+            run_summary = {}
+    source_health_map = run_summary.get("source_health") or {}
+
+    with _get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT
+                aa.source_name,
+                COUNT(*) AS analyzed_total,
+                COUNT(aa.published_at) AS with_published_date,
+                COUNT(*) FILTER (WHERE length(trim(aa.summary_generated)) >= 60) AS with_sufficient_summary,
+                COUNT(ae.event_date) AS with_explicit_event_date,
+                (
+                    SELECT COUNT(*)
+                    FROM llm_failures lf
+                    WHERE lf.source_name = aa.source_name
+                ) AS llm_failures_count
+            FROM analyzed_articles aa
+            LEFT JOIN article_events ae ON ae.article_id = aa.id
+            GROUP BY aa.source_name
+            ORDER BY analyzed_total DESC;
+            """
+        )
+        db_sources = [dict(r) for r in cur.fetchall()]
+
+        cur.execute(
+            """
+            SELECT
+                COUNT(*) AS total_articles,
+                COUNT(published_at) AS total_with_date,
+                COUNT(*) FILTER (WHERE length(trim(summary_generated)) >= 60) AS total_with_summary,
+                (SELECT COUNT(*) FROM llm_failures) AS total_llm_failures,
+                (SELECT COUNT(*) FROM article_chunks WHERE embedding IS NOT NULL) AS embedded_chunks,
+                (SELECT COUNT(*) FROM article_chunks) AS total_chunks
+            FROM analyzed_articles;
+            """
+        )
+        overall = dict(cur.fetchone() or {})
+
+    per_source = []
+    for row in db_sources:
+        sname = row["source_name"]
+        sh = source_health_map.get(sname) or {}
+        total = max(1, int(row["analyzed_total"]))
+        failures = int(row["llm_failures_count"] or 0)
+        per_source.append(
+            {
+                "source_name": sname,
+                "analyzed_total": int(row["analyzed_total"]),
+                "date_completeness_pct": round(100.0 * int(row["with_published_date"]) / total, 1),
+                "summary_completeness_pct": round(100.0 * int(row["with_sufficient_summary"]) / total, 1),
+                "explicit_event_date_count": int(row["with_explicit_event_date"]),
+                "llm_failures_count": failures,
+                "llm_failure_rate_pct": round(100.0 * failures / (total + failures), 2),
+                "avg_word_count": sh.get("avg_word_count", 0),
+                "dropped_short_in_last_run": sh.get("dropped_short_in_run", 0),
+                "extraction_status": sh.get("extraction_status", "healthy"),
+            }
+        )
+
+    tot_art = max(1, int(overall.get("total_articles", 1)))
+    tot_fail = int(overall.get("total_llm_failures", 0))
+    return {
+        "last_scrape_cairo": run_summary.get("cairo_timestamp"),
+        "overall": {
+            "total_articles": int(overall.get("total_articles", 0)),
+            "date_completeness_pct": round(100.0 * int(overall.get("total_with_date", 0)) / tot_art, 1),
+            "summary_completeness_pct": round(100.0 * int(overall.get("total_with_summary", 0)) / tot_art, 1),
+            "llm_failures_total": tot_fail,
+            "llm_success_rate_pct": round(100.0 * tot_art / (tot_art + tot_fail), 2),
+            "rag_embedding_coverage_pct": round(
+                100.0 * int(overall.get("embedded_chunks", 0)) / max(1, int(overall.get("total_chunks", 1))),
+                1,
+            ),
+        },
+        "sources": per_source,
+    }
 
 
 @app.get("/api/issues")

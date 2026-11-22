@@ -39,9 +39,10 @@ RAG_SYSTEM_PROMPT = """أنت المساعد الذكي الرسمي لمنصة 
 
 قواعد صارمة:
 1. اعتمد فقط على الحقائق والأرقام والتصريحات المذكورة في <context>، ولا تخترع أي معلومات من خارجها.
-2. نظّم الإجابة في نقاط واضحة وموجزة، واذكر اسم المصدر أو المحافظة عند الإشارة لكل خبر.
-3. إذا لم تجد في <context> ما يجيب على السؤال، قل بوضوح: "لا تتوفر في الأخبار المرصودة حاليًا تفاصيل كافية حول هذا السؤال."
-4. يُمنع تمامًا استخدام أي حروف صينية أو أجنبية."""
+2. نظّم الإجابة في نقاط واضحة وموجزة، وضع رقم الخبر المستشهد به بين قوسين مثل [1] أو [2] في نهاية كل معلومة، مع ذكر اسم الصحيفة والمحافظة.
+3. لا تستخدم أرقام مراجع غير موجودة في <context>.
+4. إذا لم تجد في <context> ما يجيب على السؤال، قل بوضوح: "لا تتوفر في الأخبار المرصودة حاليًا تفاصيل كافية حول هذا السؤال."
+5. يُمنع تمامًا استخدام أي حروف صينية أو أجنبية."""
 
 
 def get_ollama_base_host() -> str:
@@ -489,6 +490,49 @@ def hybrid_retrieve(
     return ranked[:top_k]
 
 
+def _extract_verbatim_supporting_quote(item: dict[str, Any], q_tokens: set[str]) -> str:
+    """Select a verbatim sentence from the article summary or chunk text without any LLM generation."""
+    summary_text = (item.get("summary_generated") or "").strip()
+    if not summary_text:
+        for ch in item.get("chunks") or []:
+            for line in ch.splitlines():
+                if line.startswith("الملخص:") or line.startswith("الدليل:"):
+                    summary_text = line.split(":", 1)[1].strip()
+                    break
+    if not summary_text:
+        return (item.get("title") or "").strip()
+
+    sentences = [s.strip() for s in re.split(r"[\.!\؟\n]+", summary_text) if len(s.strip()) >= 18]
+    if not sentences:
+        return summary_text[:200]
+
+    best_sent = sentences[0]
+    best_overlap = -1
+    for sent in sentences:
+        s_tokens = _tokenize_for_grounding(sent)
+        overlap = len(q_tokens & s_tokens)
+        if overlap > best_overlap:
+            best_overlap = overlap
+            best_sent = sent
+    return best_sent[:220]
+
+
+def _validate_inline_citations(text: str, max_idx: int) -> tuple[str, list[int]]:
+    """Verify every [N] citation points to a valid retrieved source (1..max_idx) and strip hallucinated numbers."""
+    cited: list[int] = []
+
+    def _repl(match: re.Match[str]) -> str:
+        num = int(match.group(1))
+        if 1 <= num <= max_idx:
+            if num not in cited:
+                cited.append(num)
+            return f"<strong>[{num}]</strong>"
+        return ""
+
+    validated = re.sub(r"\[(\d+)\]", _repl, text)
+    return validated, cited
+
+
 def answer_question_with_rag(
     question: str,
     governorate: str | None = None,
@@ -508,6 +552,7 @@ def answer_question_with_rag(
         return {
             "answer": "لم أجد أخبارًا مطابقة لهذا السؤال في الفلتر الحالي؛ جرّب توسيع البحث أو اختيار كل المحافظات.",
             "sources": [],
+            "cited_indices": [],
             "chunks_used": 0,
         }
 
@@ -520,7 +565,7 @@ def answer_question_with_rag(
     user_prompt = (
         f"<context>\n{context_str}\n</context>\n\n"
         f"سؤال المستخدم: {question}\n"
-        f"أجب باللغة العربية الفصحى في نقاط واضحة بالاعتماد على الأخبار أعلاه فقط:"
+        f"أجب باللغة العربية الفصحى في نقاط واضحة بالاعتماد على الأخبار أعلاه فقط، مع وضع رقم المرجع [1] أو [2] أمام كل معلومة:"
     )
 
     cfg = get_llm_config()
@@ -551,24 +596,31 @@ def answer_question_with_rag(
     clean_answer = _strip_cjk(raw_answer)
     # Convert markdown bold/newlines into clean HTML for the chat bubble
     html_answer = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", clean_answer)
+    html_answer, cited_indices = _validate_inline_citations(html_answer, len(retrieved))
     html_answer = html_answer.replace("\n", "<br/>")
 
+    q_tokens = _extract_query_tokens(question)
     sources = [
         {
+            "ref_index": idx,
+            "cited_in_answer": idx in cited_indices,
             "article_id": r["article_id"],
             "title": r["title"],
             "source_name": r["source_name"],
             "category": r["category"],
             "governorate": r["governorate"],
+            "published_at": r.get("published_at"),
+            "supporting_quote": _extract_verbatim_supporting_quote(r, q_tokens),
             "canonical_url": r["canonical_url"],
             "score": round(r["score"], 3),
         }
-        for r in retrieved
+        for idx, r in enumerate(retrieved, start=1)
     ]
 
     return {
         "answer": html_answer,
         "sources": sources,
+        "cited_indices": cited_indices,
         "chunks_used": len(retrieved),
     }
 
