@@ -203,3 +203,25 @@ CREATE TABLE IF NOT EXISTS public.llm_failures (
 
 CREATE INDEX IF NOT EXISTS idx_llm_failures_failed_at
     ON public.llm_failures (failed_at DESC);
+
+-- Semantic RAG chunks & embeddings (1:N with analyzed_articles)
+CREATE TABLE IF NOT EXISTS public.article_chunks (
+    id BIGSERIAL PRIMARY KEY,
+    article_id BIGINT NOT NULL REFERENCES public.analyzed_articles(id) ON DELETE CASCADE,
+    chunk_index SMALLINT NOT NULL DEFAULT 0,
+    chunk_type TEXT NOT NULL DEFAULT 'article_summary',
+    chunk_text TEXT NOT NULL,
+    governorate TEXT,
+    category TEXT,
+    source_name TEXT,
+    published_at TIMESTAMPTZ,
+    embedding FLOAT4[],
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (article_id, chunk_index)
+);
+
+CREATE INDEX IF NOT EXISTS idx_article_chunks_article_id
+    ON public.article_chunks (article_id);
+
+CREATE INDEX IF NOT EXISTS idx_article_chunks_gov_cat
+    ON public.article_chunks (governorate, category);

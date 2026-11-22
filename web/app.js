@@ -1,179 +1,218 @@
-/* Egypt Planet Intelligence — High-FPS Optimized 3D Egypt Globe + GSAP */
+/* Egypt News Intelligence — Interactive 3D Holographic Map of Egypt + GSAP Animations */
 
-const GLOBE_RADIUS = 105;
+// Map coordinate projection: lon (24.8..36.8) -> X (-95..95), lat (22.0..31.7) -> Y (-85..85)
+function lonLatToMapXY(lon, lat) {
+  const x = (lon - 30.8) * 15.5;
+  const y = (lat - 26.85) * 17.2;
+  return { x, y };
+}
 
-const EGYPT_PLANET_LAYOUT = {
-  "القاهرة":       { sLat:  12, sLon:   0 },
-  "الجيزة":        { sLat:   4, sLon: -18 },
-  "القليوبية":     { sLat:  24, sLon:   6 },
-  "المنوفية":      { sLat:  32, sLon: -14 },
-  "الغربية":       { sLat:  44, sLon:  -6 },
-  "الدقهلية":      { sLat:  46, sLon:  18 },
-  "كفر الشيخ":     { sLat:  58, sLon: -16 },
-  "دمياط":         { sLat:  60, sLon:  24 },
-  "البحيرة":       { sLat:  42, sLon: -36 },
-  "الإسكندرية":    { sLat:  52, sLon: -56 },
-  "مطروح":         { sLat:  45, sLon: -95 },
-  "الشرقية":       { sLat:  32, sLon:  28 },
-  "الإسماعيلية":   { sLat:  26, sLon:  50 },
-  "بورسعيد":       { sLat:  46, sLon:  48 },
-  "السويس":        { sLat:  10, sLon:  46 },
-  "شمال سيناء":    { sLat:  36, sLon:  82 },
-  "جنوب سيناء":    { sLat:   4, sLon:  78 },
-  "الفيوم":        { sLat: -10, sLon: -26 },
-  "بني سويف":      { sLat: -14, sLon:  -4 },
-  "المنيا":        { sLat: -28, sLon: -12 },
-  "أسيوط":         { sLat: -40, sLon:   2 },
-  "سوهاج":         { sLat: -50, sLon:  14 },
-  "قنا":           { sLat: -56, sLon:  34 },
-  "الأقصر":        { sLat: -66, sLon:  20 },
-  "أسوان":         { sLat: -76, sLon:   4 },
-  "البحر الأحمر":  { sLat: -32, sLon:  64 },
-  "الوادي الجديد": { sLat: -38, sLon: -68 },
+// Well-spaced visual coordinates (lon, lat) inside Egypt's map outline so all 27 governorates
+// sit in their true geographic zones while Delta neighbors remain crystal-clear & non-overlapping
+const EGYPT_MAP_GOVS = {
+  "القاهرة":       { lon: 31.35, lat: 30.02 },
+  "الجيزة":        { lon: 30.65, lat: 29.85 },
+  "القليوبية":     { lon: 31.38, lat: 30.42 },
+  "المنوفية":      { lon: 30.78, lat: 30.52 },
+  "الغربية":       { lon: 30.98, lat: 30.88 },
+  "الدقهلية":      { lon: 31.62, lat: 31.05 },
+  "كفر الشيخ":     { lon: 30.82, lat: 31.42 },
+  "دمياط":         { lon: 31.88, lat: 31.48 },
+  "البحيرة":       { lon: 30.18, lat: 30.78 },
+  "الإسكندرية":    { lon: 29.68, lat: 31.18 },
+  "مطروح":         { lon: 27.15, lat: 31.15 },
+  "الشرقية":       { lon: 31.82, lat: 30.62 },
+  "الإسماعيلية":   { lon: 32.38, lat: 30.55 },
+  "بورسعيد":       { lon: 32.38, lat: 31.28 },
+  "السويس":        { lon: 32.52, lat: 29.92 },
+  "شمال سيناء":    { lon: 33.75, lat: 30.85 },
+  "جنوب سيناء":    { lon: 33.95, lat: 28.65 },
+  "الفيوم":        { lon: 30.42, lat: 29.30 },
+  "بني سويف":      { lon: 31.05, lat: 28.95 },
+  "المنيا":        { lon: 30.68, lat: 28.10 },
+  "أسيوط":         { lon: 31.18, lat: 27.22 },
+  "سوهاج":         { lon: 31.70, lat: 26.55 },
+  "قنا":           { lon: 32.75, lat: 26.18 },
+  "الأقصر":        { lon: 32.62, lat: 25.55 },
+  "أسوان":         { lon: 32.90, lat: 24.05 },
+  "البحر الأحمر":  { lon: 34.15, lat: 26.55 },
+  "الوادي الجديد": { lon: 28.20, lat: 25.35 },
 };
 
-let scene, camera, renderer, globeGroup;
+// Accurate geographic outline of Egypt (lon, lat)
+const EGYPT_OUTLINE_COORDS = [
+  [25.0, 31.55], [26.2, 31.45], [27.2, 31.35], [28.5, 31.05], [29.85, 31.20],
+  [30.4, 31.45], [31.0, 31.58], [31.85, 31.52], [32.35, 31.26], [33.2, 31.15],
+  [34.22, 31.28], [34.88, 29.52], [34.70, 28.70], [34.30, 27.75], [33.72, 28.35],
+  [32.55, 29.92], [32.68, 29.20], [33.15, 28.15], [33.82, 27.20], [34.45, 26.10],
+  [34.95, 25.00], [35.55, 23.95], [36.65, 22.00], [32.00, 22.00], [28.50, 22.00],
+  [25.00, 22.00], [25.00, 25.50], [24.75, 29.20], [25.00, 31.55],
+];
+
+// Point-in-polygon check so holographic grid dots fill ONLY Egypt's real territory
+function isInsideEgypt(lon, lat) {
+  let inside = false;
+  for (let i = 0, j = EGYPT_OUTLINE_COORDS.length - 1; i < EGYPT_OUTLINE_COORDS.length; j = i++) {
+    const xi = EGYPT_OUTLINE_COORDS[i][0], yi = EGYPT_OUTLINE_COORDS[i][1];
+    const xj = EGYPT_OUTLINE_COORDS[j][0], yj = EGYPT_OUTLINE_COORDS[j][1];
+    const intersect = yi > lat !== yj > lat && lon < ((xj - xi) * (lat - yi)) / (yj - yi + 1e-9) + xi;
+    if (intersect) inside = !inside;
+  }
+  return inside;
+}
+
+let scene, camera, renderer, mapGroup;
 let govMarkers = [];
 let labelElements = [];
 let pulseRings = [];
 let signalArcs = [];
+let nileParticles = [];
+let nileMainCurve = null;
 let raycaster, mouse;
 let isDragging = false;
 let dragDistance = 0;
 let prevPointer = { x: 0, y: 0 };
-let autoRotate = true;
+let targetTilt = { x: -0.28, y: 0.0 };
 let heroVisible = true;
-let canvasW = window.innerWidth;
-let canvasH = window.innerHeight;
+let reducedMotion = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+let canvasW = 800;
+let canvasH = 560;
 let currentGovData = null;
 let currentTab = "articles";
 let governoratesList = [];
 
-// Pre-allocated scratch vectors (zero GC allocations per frame)
-const _globeCenterWorld = new THREE.Vector3();
 const _worldPos = new THREE.Vector3();
-const _surfaceNormal = new THREE.Vector3();
-const _camDir = new THREE.Vector3();
 const _projected = new THREE.Vector3();
 
-function latLonToVec3(lat, lon, radius = GLOBE_RADIUS) {
-  const phi = (90 - lat) * (Math.PI / 180);
-  const theta = (lon + 180) * (Math.PI / 180);
-  const x = -(radius * Math.sin(phi) * Math.cos(theta));
-  const z = radius * Math.sin(phi) * Math.sin(theta);
-  const y = radius * Math.cos(phi);
-  return new THREE.Vector3(x, y, z);
-}
-
-function getGovSphereCoords(gov) {
-  if (EGYPT_PLANET_LAYOUT[gov.name]) {
-    return EGYPT_PLANET_LAYOUT[gov.name];
-  }
-  return {
-    sLat: (gov.lat - 27.5) * 14,
-    sLon: (gov.lon - 31.0) * 18,
-  };
-}
-
-function initGlobe() {
+function initEgyptMap() {
   const canvas = document.getElementById("globe-canvas");
   const wrap = document.getElementById("globe-canvas-wrap");
   canvasW = wrap.clientWidth;
   canvasH = wrap.clientHeight;
 
   scene = new THREE.Scene();
-  camera = new THREE.PerspectiveCamera(42, canvasW / canvasH, 1, 1200);
-  camera.position.set(0, 12, 285);
+  camera = new THREE.PerspectiveCamera(38, canvasW / canvasH, 1, 1200);
+  camera.position.set(0, -18, 255);
+  camera.lookAt(0, 0, 0);
 
   renderer = new THREE.WebGLRenderer({
     canvas,
-    antialias: false,
+    antialias: true,
     alpha: true,
     powerPreference: "high-performance",
   });
-  renderer.setPixelRatio(1);
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
   renderer.setSize(canvasW, canvasH);
 
   raycaster = new THREE.Raycaster();
   mouse = new THREE.Vector2();
 
-  globeGroup = new THREE.Group();
-  globeGroup.position.set(canvasW > 960 ? -48 : 0, 4, 0);
-  scene.add(globeGroup);
+  mapGroup = new THREE.Group();
+  // Slight 3D holographic perspective tilt
+  mapGroup.rotation.x = targetTilt.x;
+  mapGroup.rotation.y = targetTilt.y;
+  scene.add(mapGroup);
 
-  // 1. Core Sphere (32x24 segments for fast rendering)
-  const coreGeo = new THREE.SphereGeometry(GLOBE_RADIUS - 0.8, 32, 24);
-  const coreMat = new THREE.MeshBasicMaterial({ color: 0x04171b });
-  globeGroup.add(new THREE.Mesh(coreGeo, coreMat));
-
-  // 2. Wireframe Grid
-  const wireGeo = new THREE.SphereGeometry(GLOBE_RADIUS - 0.2, 24, 16);
-  const wireMat = new THREE.MeshBasicMaterial({
-    color: 0x115e59,
-    wireframe: true,
-    transparent: true,
-    opacity: 0.2,
+  // 1. Subtle Holographic Radar Base Rings behind Egypt
+  [65, 95, 125].forEach((r, idx) => {
+    const ringGeo = new THREE.RingGeometry(r - 0.35, r, 64);
+    const ringMat = new THREE.MeshBasicMaterial({
+      color: 0x115e59,
+      side: THREE.DoubleSide,
+      transparent: true,
+      opacity: 0.16 - idx * 0.03,
+    });
+    const ring = new THREE.Mesh(ringGeo, ringMat);
+    ring.position.z = -3;
+    mapGroup.add(ring);
   });
-  globeGroup.add(new THREE.Mesh(wireGeo, wireMat));
 
-  // 3. Dotted Egypt Planet Surface (2600 points — crisp & ultra-fast)
-  const dotPositions = [];
-  const highlightPositions = [];
-  const totalDots = 2600;
-  const goldenRatio = (1 + Math.sqrt(5)) / 2;
-  const govSpheres = Object.values(EGYPT_PLANET_LAYOUT);
+  // 2. Glowing 3D Egypt Border Outline (Double Layer for 3D Depth)
+  const borderPtsTop = [];
+  const borderPtsBottom = [];
+  EGYPT_OUTLINE_COORDS.forEach(([lon, lat]) => {
+    const { x, y } = lonLatToMapXY(lon, lat);
+    borderPtsTop.push(new THREE.Vector3(x, y, 1.5));
+    borderPtsBottom.push(new THREE.Vector3(x, y, -2.0));
+  });
 
-  for (let i = 0; i < totalDots; i++) {
-    const theta = (2 * Math.PI * i) / goldenRatio;
-    const phi = Math.acos(1 - (2 * (i + 0.5)) / totalDots);
-    const lat = 90 - (phi * 180) / Math.PI;
-    const lon = ((theta * 180) / Math.PI) % 360 - 180;
+  const topOutlineGeo = new THREE.BufferGeometry().setFromPoints(borderPtsTop);
+  mapGroup.add(
+    new THREE.Line(
+      topOutlineGeo,
+      new THREE.LineBasicMaterial({ color: 0x5eead4, transparent: true, opacity: 0.92 })
+    )
+  );
 
-    let minDist = 999;
-    for (let j = 0; j < govSpheres.length; j++) {
-      const dLat = lat - govSpheres[j].sLat;
-      const dLon = lon - govSpheres[j].sLon;
-      const d = dLat * dLat + dLon * dLon;
-      if (d < minDist) minDist = d;
-    }
+  const botOutlineGeo = new THREE.BufferGeometry().setFromPoints(borderPtsBottom);
+  mapGroup.add(
+    new THREE.Line(
+      botOutlineGeo,
+      new THREE.LineBasicMaterial({ color: 0x0f766e, transparent: true, opacity: 0.45 })
+    )
+  );
 
-    if (minDist < 480) {
-      const v = latLonToVec3(lat, lon, GLOBE_RADIUS + 0.45);
-      highlightPositions.push(v.x, v.y, v.z);
-    } else if (i % 2 === 0) {
-      const v = latLonToVec3(lat, lon, GLOBE_RADIUS + 0.15);
-      dotPositions.push(v.x, v.y, v.z);
+  // 3. Holographic Dotted Interior Matrix strictly inside Egypt's borders
+  const interiorDots = [];
+  for (let lon = 24.9; lon <= 36.6; lon += 0.23) {
+    for (let lat = 22.1; lat <= 31.6; lat += 0.21) {
+      if (isInsideEgypt(lon, lat)) {
+        const { x, y } = lonLatToMapXY(lon, lat);
+        interiorDots.push(x, y, 0);
+      }
     }
   }
-
-  const bgGeo = new THREE.BufferGeometry();
-  bgGeo.setAttribute("position", new THREE.Float32BufferAttribute(dotPositions, 3));
-  globeGroup.add(
-    new THREE.Points(bgGeo, new THREE.PointsMaterial({ color: 0x0f766e, size: 1.4, transparent: true, opacity: 0.45 }))
+  const dotsGeo = new THREE.BufferGeometry();
+  dotsGeo.setAttribute("position", new THREE.Float32BufferAttribute(interiorDots, 3));
+  mapGroup.add(
+    new THREE.Points(
+      dotsGeo,
+      new THREE.PointsMaterial({ color: 0x2dd4bf, size: 1.95, transparent: true, opacity: 0.62 })
+    )
   );
 
-  const egGeo = new THREE.BufferGeometry();
-  egGeo.setAttribute("position", new THREE.Float32BufferAttribute(highlightPositions, 3));
-  globeGroup.add(
-    new THREE.Points(egGeo, new THREE.PointsMaterial({ color: 0x5eead4, size: 2.1, transparent: true, opacity: 0.88 }))
-  );
-
-  // 4. Glowing Nile River Path
-  const nileGovOrder = ["أسوان", "الأقصر", "قنا", "سوهاج", "أسيوط", "المنيا", "بني سويف", "الجيزة", "القاهرة"];
-  const nilePts = nileGovOrder.map((name) => {
-    const c = EGYPT_PLANET_LAYOUT[name];
-    return latLonToVec3(c.sLat, c.sLon, GLOBE_RADIUS + 0.9);
+  // 4. Glowing Nile River + Delta Branches (Rosetta & Damietta) + Animated Flowing Particles
+  const nileCoords = [
+    [31.5, 22.2], [32.6, 23.1], [32.9, 24.08], [32.64, 25.68], [32.71, 26.15],
+    [31.70, 26.55], [31.18, 27.18], [30.76, 28.08], [31.09, 29.06], [31.20, 29.85],
+    [31.24, 30.05],
+  ];
+  const nileVecs = nileCoords.map(([lon, lat]) => {
+    const { x, y } = lonLatToMapXY(lon, lat);
+    return new THREE.Vector3(x, y, 1.8);
   });
-  const nileCurve = new THREE.CatmullRomCurve3(nilePts);
-  const nileGeo = new THREE.BufferGeometry().setFromPoints(nileCurve.getPoints(48));
-  globeGroup.add(
-    new THREE.Line(nileGeo, new THREE.LineBasicMaterial({ color: 0x38bdf8, transparent: true, opacity: 0.75 }))
+  nileMainCurve = new THREE.CatmullRomCurve3(nileVecs);
+  const nileGeo = new THREE.BufferGeometry().setFromPoints(nileMainCurve.getPoints(70));
+  mapGroup.add(
+    new THREE.Line(nileGeo, new THREE.LineBasicMaterial({ color: 0x38bdf8, transparent: true, opacity: 0.95 }))
   );
 
-  focusGlobeOnCoords(8, 0, false);
+  // Rosetta Branch (فرع رشيد) & Damietta Branch (فرع دمياط)
+  const rosettaPts = [[31.24, 30.05], [30.85, 30.65], [30.45, 31.42]].map(([lon, lat]) => {
+    const { x, y } = lonLatToMapXY(lon, lat);
+    return new THREE.Vector3(x, y, 1.8);
+  });
+  const damiettaPts = [[31.24, 30.05], [31.38, 30.70], [31.82, 31.48]].map(([lon, lat]) => {
+    const { x, y } = lonLatToMapXY(lon, lat);
+    return new THREE.Vector3(x, y, 1.8);
+  });
+  [rosettaPts, damiettaPts].forEach((branch) => {
+    const c = new THREE.CatmullRomCurve3(branch);
+    const g = new THREE.BufferGeometry().setFromPoints(c.getPoints(24));
+    mapGroup.add(new THREE.Line(g, new THREE.LineBasicMaterial({ color: 0x38bdf8, transparent: true, opacity: 0.85 })));
+  });
 
-  // Pause WebGL rendering when user scrolls down past hero section
-  const heroSection = document.getElementById("globe-hero");
+  // Animated flowing light particles along the Nile River
+  const nileDotGeo = new THREE.SphereGeometry(0.95, 8, 8);
+  const nileDotMat = new THREE.MeshBasicMaterial({ color: 0xbae6fd });
+  for (let i = 0; i < 6; i++) {
+    const pMesh = new THREE.Mesh(nileDotGeo, nileDotMat);
+    mapGroup.add(pMesh);
+    nileParticles.push({ mesh: pMesh, t: i / 6 });
+  }
+
+  // Pause rendering when scrolled off-screen
+  const heroSection = document.getElementById("globe-command");
   const observer = new IntersectionObserver(
     (entries) => {
       heroVisible = entries[0].isIntersecting;
@@ -182,13 +221,12 @@ function initGlobe() {
   );
   observer.observe(heroSection);
 
-  // Pointer & Drag Interactions (no raycasting on pointermove!)
+  // Interactive Tilt / Pan / Parallax
   wrap.addEventListener(
     "pointerdown",
     (e) => {
       isDragging = true;
       dragDistance = 0;
-      autoRotate = false;
       prevPointer.x = e.clientX;
       prevPointer.y = e.clientY;
     },
@@ -200,19 +238,28 @@ function initGlobe() {
   wrap.addEventListener(
     "pointermove",
     (e) => {
-      if (!isDragging) return;
-      const dx = e.clientX - prevPointer.x;
-      const dy = e.clientY - prevPointer.y;
-      dragDistance += Math.abs(dx) + Math.abs(dy);
-      globeGroup.rotation.y += dx * 0.0055;
-      globeGroup.rotation.x = Math.max(-1.1, Math.min(1.1, globeGroup.rotation.x + dy * 0.0055));
-      prevPointer.x = e.clientX;
-      prevPointer.y = e.clientY;
+      const rect = wrap.getBoundingClientRect();
+      const nx = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+      const ny = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+
+      if (isDragging) {
+        const dx = e.clientX - prevPointer.x;
+        const dy = e.clientY - prevPointer.y;
+        dragDistance += Math.abs(dx) + Math.abs(dy);
+        targetTilt.y = Math.max(-0.55, Math.min(0.55, targetTilt.y + dx * 0.0045));
+        targetTilt.x = Math.max(-0.65, Math.min(0.25, targetTilt.x + dy * 0.0045));
+        prevPointer.x = e.clientX;
+        prevPointer.y = e.clientY;
+      } else {
+        // Subtle holographic mouse parallax
+        targetTilt.y = nx * 0.14;
+        targetTilt.x = -0.26 - ny * 0.1;
+      }
     },
     { passive: true }
   );
   wrap.addEventListener("click", (e) => {
-    if (dragDistance < 8) handleGlobeClick(e);
+    if (dragDistance < 8) handleMapClick(e);
   });
 
   window.addEventListener("resize", () => {
@@ -226,111 +273,104 @@ function initGlobe() {
   animate();
 }
 
-function focusGlobeOnCoords(sLat, sLon, animateGsap = true) {
-  const targetRotY = -((sLon + 90) * Math.PI) / 180;
-  const targetRotX = (sLat * Math.PI) / 180;
-  if (animateGsap) {
-    gsap.to(globeGroup.rotation, {
-      y: targetRotY,
-      x: targetRotX,
-      duration: 1.15,
-      ease: "power3.inOut",
-    });
-  } else {
-    globeGroup.rotation.y = targetRotY;
-    globeGroup.rotation.x = targetRotX;
-  }
-}
-
 function addGovernorateMarkers(govs) {
   const labelsContainer = document.getElementById("globe-labels");
   labelsContainer.innerHTML = "";
   govMarkers = [];
   labelElements = [];
+  pulseRings = [];
+  signalArcs = [];
 
-  const cairoCoords = EGYPT_PLANET_LAYOUT["القاهرة"];
-  const cairoVec = latLonToVec3(cairoCoords.sLat, cairoCoords.sLon, GLOBE_RADIUS + 1.3);
-  const sharedPinGeo = new THREE.SphereGeometry(1, 10, 10);
-  const sharedDotGeo = new THREE.SphereGeometry(0.95, 6, 6);
+  const cairoCoord = EGYPT_MAP_GOVS["القاهرة"];
+  const cairoXY = lonLatToMapXY(cairoCoord.lon, cairoCoord.lat);
+  const cairoVec = new THREE.Vector3(cairoXY.x, cairoXY.y, 2.5);
+
+  const sharedPinGeo = new THREE.SphereGeometry(1, 12, 12);
+  const sharedDotGeo = new THREE.SphereGeometry(0.95, 8, 8);
   const sharedDotMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
 
   govs.forEach((g, idx) => {
-    const sc = getGovSphereCoords(g);
-    g.sLat = sc.sLat;
-    g.sLon = sc.sLon;
+    const mc = EGYPT_MAP_GOVS[g.name] || { lon: g.lon, lat: g.lat };
+    const { x, y } = lonLatToMapXY(mc.lon, mc.lat);
+    g.mapX = x;
+    g.mapY = y;
 
-    const pos = latLonToVec3(sc.sLat, sc.sLon, GLOBE_RADIUS + 1.5);
+    const pos = new THREE.Vector3(x, y, 2.5);
     const hasActivity = g.articles_count > 0 || g.events_count > 0 || g.issues_count > 0;
-    const size = hasActivity ? Math.min(3.1, 1.45 + Math.log1p(g.articles_count) * 0.32) : 1.25;
+    const size = hasActivity ? Math.min(2.8, 1.35 + Math.log1p(g.articles_count) * 0.28) : 1.15;
     const color = g.issues_count > 0 ? 0xfb7185 : hasActivity ? 0x5eead4 : 0x38bdf8;
 
     const mesh = new THREE.Mesh(sharedPinGeo, new THREE.MeshBasicMaterial({ color }));
     mesh.scale.setScalar(size);
     mesh.position.copy(pos);
     mesh.userData = g;
-    globeGroup.add(mesh);
+    mapGroup.add(mesh);
     govMarkers.push(mesh);
 
-    if (g.name !== "القاهرة" && hasActivity && signalArcs.length < 10) {
-      const mid = pos.clone().add(cairoVec).multiplyScalar(0.5);
+    // Expanding radar ring on the map plane
+    if (hasActivity) {
+      const ringGeo = new THREE.RingGeometry(size * 1.25, size * 1.7, 24);
+      const ringMat = new THREE.MeshBasicMaterial({
+        color,
+        side: THREE.DoubleSide,
+        transparent: true,
+        opacity: 0.7,
+      });
+      const ring = new THREE.Mesh(ringGeo, ringMat);
+      ring.position.set(x, y, 2.2);
+      mapGroup.add(ring);
+      pulseRings.push({ ring, phase: idx * 0.6 });
+    }
+
+    // 3D Curved Signal Arcs arching above Egypt from Cairo to active governorates
+    if (g.name !== "القاهرة" && hasActivity && signalArcs.length < 14) {
       const dist = pos.distanceTo(cairoVec);
-      mid.normalize().multiplyScalar(GLOBE_RADIUS + 10 + dist * 0.2);
+      const mid = new THREE.Vector3((cairoVec.x + x) * 0.5, (cairoVec.y + y) * 0.5, 14 + dist * 0.22);
       const curve = new THREE.QuadraticBezierCurve3(cairoVec, mid, pos);
-      const arcGeo = new THREE.BufferGeometry().setFromPoints(curve.getPoints(24));
+      const arcGeo = new THREE.BufferGeometry().setFromPoints(curve.getPoints(28));
       const arcMat = new THREE.LineBasicMaterial({
         color: g.issues_count > 0 ? 0xfb7185 : 0x2dd4bf,
         transparent: true,
-        opacity: 0.35,
+        opacity: 0.42,
       });
-      globeGroup.add(new THREE.Line(arcGeo, arcMat));
+      mapGroup.add(new THREE.Line(arcGeo, arcMat));
 
       const dot = new THREE.Mesh(sharedDotGeo, sharedDotMat);
-      globeGroup.add(dot);
-      signalArcs.push({ curve, dot, t: (idx * 0.13) % 1 });
+      mapGroup.add(dot);
+      signalArcs.push({ curve, dot, t: (idx * 0.14) % 1 });
     }
 
+    // Floating Arabic Governorate Label directly over its pin on the Egypt Map
     const lbl = document.createElement("div");
     lbl.className = "globe-gov-label" + (g.issues_count > 0 ? " has-issue" : "");
     lbl.dataset.gov = g.name;
+    lbl.setAttribute("role", "button");
+    lbl.setAttribute("tabindex", "0");
+    lbl.setAttribute("aria-label", `محافظة ${g.name} (${g.articles_count} مقال، ${g.events_count} حدث، ${g.issues_count} مشكلة)`);
     lbl.innerHTML = `<span class="lbl-dot"></span><span>${g.name}</span>${g.articles_count > 0 ? `<span class="lbl-cnt">${g.articles_count}</span>` : ""}`;
     lbl.addEventListener("click", (ev) => {
       ev.stopPropagation();
       selectGovernorate(g.name);
     });
+    lbl.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter" || ev.key === " ") {
+        ev.preventDefault();
+        selectGovernorate(g.name);
+      }
+    });
     labelsContainer.appendChild(lbl);
-    labelElements.push({ el: lbl, localPos: pos.clone(), visible: true });
+    labelElements.push({ el: lbl, localPos: pos.clone() });
   });
 }
 
 function updateFloatingLabels() {
   const len = labelElements.length;
   if (!len) return;
-
-  globeGroup.getWorldPosition(_globeCenterWorld);
-  const matWorld = globeGroup.matrixWorld;
+  const matWorld = mapGroup.matrixWorld;
 
   for (let i = 0; i < len; i++) {
     const item = labelElements[i];
     _worldPos.copy(item.localPos).applyMatrix4(matWorld);
-    _surfaceNormal.copy(_worldPos).sub(_globeCenterWorld).normalize();
-    _camDir.copy(camera.position).sub(_worldPos).normalize();
-    const dot = _surfaceNormal.dot(_camDir);
-
-    if (dot < 0.14) {
-      if (item.visible) {
-        item.el.style.opacity = "0";
-        item.el.style.pointerEvents = "none";
-        item.visible = false;
-      }
-      continue;
-    }
-
-    if (!item.visible) {
-      item.el.style.opacity = "1";
-      item.el.style.pointerEvents = "auto";
-      item.visible = true;
-    }
-
     _projected.copy(_worldPos).project(camera);
     const x = (_projected.x * 0.5 + 0.5) * canvasW;
     const y = (-(_projected.y * 0.5) + 0.5) * canvasH;
@@ -338,7 +378,7 @@ function updateFloatingLabels() {
   }
 }
 
-function handleGlobeClick(e) {
+function handleMapClick(e) {
   const wrap = document.getElementById("globe-canvas-wrap");
   const rect = wrap.getBoundingClientRect();
   mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
@@ -355,16 +395,50 @@ function animate() {
   requestAnimationFrame(animate);
   if (!heroVisible) return;
 
-  if (autoRotate && !isDragging) {
-    globeGroup.rotation.y += 0.002;
+  if (!reducedMotion) {
+    mapGroup.rotation.x += (targetTilt.x - mapGroup.rotation.x) * 0.08;
+    mapGroup.rotation.y += (targetTilt.y - mapGroup.rotation.y) * 0.08;
+
+    const tNow = performance.now() * 0.0035;
+    for (let i = 0; i < pulseRings.length; i++) {
+      const p = pulseRings[i];
+      const s = 1 + 0.45 * Math.sin(tNow + p.phase);
+      p.ring.scale.set(s, s, 1);
+      p.ring.material.opacity = 0.72 - 0.35 * Math.sin(tNow + p.phase);
+    }
+
+    for (let i = 0; i < signalArcs.length; i++) {
+      const a = signalArcs[i];
+      a.t = (a.t + 0.0065) % 1;
+      a.curve.getPointAt(a.t, a.dot.position);
+    }
+
+    if (nileMainCurve) {
+      for (let i = 0; i < nileParticles.length; i++) {
+        const np = nileParticles[i];
+        np.t = (np.t + 0.0035) % 1;
+        nileMainCurve.getPointAt(np.t, np.mesh.position);
+      }
+    }
   }
-  for (let i = 0; i < signalArcs.length; i++) {
-    const a = signalArcs[i];
-    a.t = (a.t + 0.0055) % 1;
-    a.curve.getPointAt(a.t, a.dot.position);
-  }
+
   renderer.render(scene, camera);
   updateFloatingLabels();
+}
+
+function renderStateBox(containerEl, type, title, desc, retryFn = null) {
+  if (!containerEl) return;
+  containerEl.innerHTML = `
+    <div class="state-box ${type === "error" ? "error-box" : ""}" role="${type === "error" ? "alert" : "status"}">
+      <h4>${title}</h4>
+      <p>${desc}</p>
+      ${retryFn ? `<button class="btn-primary state-retry-btn">إعادة المحاولة ↻</button>` : ""}
+    </div>
+  `;
+  if (retryFn) {
+    const btn = containerEl.querySelector(".state-retry-btn");
+    if (btn) btn.addEventListener("click", retryFn);
+  }
 }
 
 // --- API & UI Rendering ---
@@ -376,7 +450,8 @@ async function loadOverview() {
   animateNumber("kpi-alerts", c.total_alerts || 0);
   animateNumber("kpi-events", c.total_events || 0);
   animateNumber("kpi-issues", c.total_issues || 0);
-  animateNumber("kpi-clusters", c.multi_source_clusters || 0);
+  const clEl = document.getElementById("kpi-clusters");
+  if (clEl) clEl.textContent = (c.multi_source_clusters || 0).toLocaleString("ar-EG");
   renderDailyDigest(data.latest_digest);
 }
 
@@ -424,10 +499,11 @@ function renderDailyDigest(digestRow) {
 
 function animateNumber(id, target) {
   const el = document.getElementById(id);
+  if (!el) return;
   const obj = { val: 0 };
   gsap.to(obj, {
     val: target,
-    duration: 1.2,
+    duration: 1.1,
     ease: "power2.out",
     onUpdate: () => {
       el.textContent = Math.round(obj.val).toLocaleString("ar-EG");
@@ -435,14 +511,11 @@ function animateNumber(id, target) {
   });
 }
 
-async function loadGovernorates() {
-  const res = await fetch("/api/governorates");
-  const data = await res.json();
-  governoratesList = data.governorates || [];
-  addGovernorateMarkers(governoratesList);
-
+function renderGovPills(filterText = "") {
   const pills = document.getElementById("gov-pills");
-  pills.innerHTML = governoratesList
+  const q = filterText.trim();
+  const filtered = q ? governoratesList.filter((g) => g.name.includes(q)) : governoratesList;
+  pills.innerHTML = filtered
     .map(
       (g) => `
       <button class="gov-pill" data-gov="${g.name}">
@@ -457,16 +530,59 @@ async function loadGovernorates() {
   });
 }
 
+async function loadGovernorates() {
+  try {
+    const res = await fetch("/api/governorates");
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    governoratesList = data.governorates || [];
+    addGovernorateMarkers(governoratesList);
+    renderGovPills();
+
+    const sel = document.getElementById("gov-mobile-select");
+    if (sel) {
+      sel.innerHTML =
+        `<option value="">-- اختر من القائمة (${governoratesList.length}) --</option>` +
+        governoratesList
+          .map((g) => `<option value="${g.name}">${g.name} (${g.articles_count} مقال)</option>`)
+          .join("");
+    }
+    const ragGovSel = document.getElementById("rag-gov-filter");
+    if (ragGovSel) {
+      ragGovSel.innerHTML =
+        `<option value="">📍 كل محافظات مصر</option>` +
+        governoratesList.map((g) => `<option value="${g.name}">📍 ${g.name}</option>`).join("");
+    }
+  } catch (err) {
+    renderStateBox(
+      document.getElementById("gov-pills"),
+      "error",
+      "تعذر تحميل قائمة المحافظات",
+      "تأكد من اتصال السيرفر بقاعدة بيانات PostgreSQL.",
+      () => loadGovernorates()
+    );
+  }
+}
+
 async function selectGovernorate(govName) {
-  autoRotate = false;
-
   const govObj = governoratesList.find((g) => g.name === govName);
-  const sc = govObj ? getGovSphereCoords(govObj) : { sLat: 12, sLon: 0 };
-  focusGlobeOnCoords(sc.sLat, sc.sLon, true);
+  const gx = govObj && govObj.mapX !== undefined ? govObj.mapX : 0;
+  const gy = govObj && govObj.mapY !== undefined ? govObj.mapY : 0;
 
-  gsap.to(globeGroup.position, { x: canvasW > 960 ? 35 : 0, y: 4, duration: 1.1, ease: "power3.inOut" });
-  gsap.to(camera.position, { x: 0, y: 8, z: 235, duration: 1.15, ease: "power3.inOut" });
-  gsap.to("#hero-overlay", { opacity: 0, x: 40, duration: 0.45, pointerEvents: "none" });
+  // Smooth GSAP camera fly-to over the selected governorate on the 3D Egypt Map
+  gsap.to(mapGroup.position, {
+    x: -gx + (canvasW > 700 ? 45 : 0),
+    y: -gy * 0.75,
+    duration: 1.05,
+    ease: "power3.inOut",
+  });
+  gsap.to(camera.position, {
+    x: 0,
+    y: -12,
+    z: 165,
+    duration: 1.1,
+    ease: "power3.inOut",
+  });
 
   document.querySelectorAll(".gov-pill, .globe-gov-label").forEach((b) => {
     b.classList.toggle("active", b.dataset.gov === govName);
@@ -474,7 +590,7 @@ async function selectGovernorate(govName) {
 
   const drawer = document.getElementById("gov-drawer");
   drawer.classList.remove("hidden");
-  gsap.fromTo(drawer, { x: -30, opacity: 0 }, { x: 0, opacity: 1, duration: 0.35, ease: "power2.out" });
+  gsap.fromTo(drawer, { x: -24, opacity: 0 }, { x: 0, opacity: 1, duration: 0.3, ease: "power2.out" });
 
   document.getElementById("drawer-gov-name").textContent = govName;
   document.getElementById("drawer-body").innerHTML = `<div class="loading-msg">جاري تحميل أخبار وأحداث ${govName}...</div>`;
@@ -488,29 +604,58 @@ async function selectGovernorate(govName) {
   renderDrawerTab(currentTab);
 }
 
-function resetGlobeView() {
-  autoRotate = true;
+function resetMapView() {
   closeDrawer();
-
-  gsap.to(globeGroup.position, { x: canvasW > 960 ? -48 : 0, y: 4, duration: 1.1, ease: "power3.inOut" });
-  gsap.to(camera.position, { x: 0, y: 12, z: 285, duration: 1.15, ease: "power3.inOut" });
-  gsap.to("#hero-overlay", { opacity: 1, x: 0, duration: 0.6, pointerEvents: "auto" });
+  gsap.to(mapGroup.position, { x: 0, y: 0, duration: 1.0, ease: "power3.inOut" });
+  gsap.to(camera.position, { x: 0, y: -18, z: 255, duration: 1.05, ease: "power3.inOut" });
 }
 
-function renderDrawerTab(tab) {
+function renderPaginatedList(items, gridEl, moreWrapEl, renderCardFn, pageSize = 36) {
+  let shown = 0;
+  gridEl.innerHTML = "";
+  if (moreWrapEl) moreWrapEl.innerHTML = "";
+
+  function showNext(batchSize) {
+    const slice = items.slice(shown, shown + batchSize);
+    gridEl.insertAdjacentHTML("beforeend", slice.map(renderCardFn).join(""));
+    shown += slice.length;
+    if (!moreWrapEl) return;
+    const rem = items.length - shown;
+    if (rem > 0) {
+      moreWrapEl.innerHTML = `
+        <button class="btn-primary btn-more">عرض المزيد (${Math.min(pageSize, rem)} من أصل ${rem} متبقي)</button>
+        <button class="btn-outline btn-all">عرض الكل (${items.length})</button>
+      `;
+      moreWrapEl.querySelector(".btn-more").addEventListener("click", () => showNext(pageSize));
+      moreWrapEl.querySelector(".btn-all").addEventListener("click", () => showNext(rem));
+    } else {
+      moreWrapEl.innerHTML = "";
+    }
+  }
+
+  showNext(pageSize);
+}
+
+function renderDrawerTab(tab, showAll = false) {
   currentTab = tab;
   document.querySelectorAll(".dtab").forEach((b) => b.classList.toggle("active", b.dataset.tab === tab));
   const body = document.getElementById("drawer-body");
   if (!currentGovData) return;
 
+  const limit = showAll ? 5000 : 40;
+
   if (tab === "articles") {
-    if (!currentGovData.articles.length) {
+    const list = currentGovData.articles || [];
+    if (!list.length) {
       body.innerHTML = `<div class="loading-msg">لا توجد مقالات مسجلة لهذه المحافظة بعد.</div>`;
       return;
     }
-    body.innerHTML = currentGovData.articles
-      .map(
-        (a) => `
+    const rem = list.length - limit;
+    body.innerHTML =
+      list
+        .slice(0, limit)
+        .map(
+          (a) => `
         <div class="drawer-item">
           <div class="badges-row" style="margin-bottom:6px">
             <span class="badge">${a.category || ""}</span>
@@ -521,16 +666,23 @@ function renderDrawerTab(tab) {
           <p>${a.summary_generated || ""}</p>
           <a href="${a.canonical_url}" target="_blank" rel="noopener">اقرأ الخبر الأصلي ↗</a>
         </div>`
-      )
-      .join("");
+        )
+        .join("") +
+      (rem > 0
+        ? `<button id="drawer-show-all" class="btn-primary" style="width:100%;margin-top:8px;">عرض كل الأخبار (${list.length})</button>`
+        : "");
   } else if (tab === "events") {
-    if (!currentGovData.events.length) {
+    const list = currentGovData.events || [];
+    if (!list.length) {
       body.innerHTML = `<div class="loading-msg">لا توجد أحداث مستخرجة لهذه المحافظة بعد.</div>`;
       return;
     }
-    body.innerHTML = currentGovData.events
-      .map(
-        (ev) => `
+    const rem = list.length - limit;
+    body.innerHTML =
+      list
+        .slice(0, limit)
+        .map(
+          (ev) => `
         <div class="drawer-item">
           <div class="badges-row" style="margin-bottom:6px">
             <span class="badge">${ev.event_type}</span>
@@ -541,16 +693,23 @@ function renderDrawerTab(tab) {
           <p>${ev.event_description}</p>
           <a href="${ev.canonical_url}" target="_blank" rel="noopener">المصدر: ${ev.source_name} ↗</a>
         </div>`
-      )
-      .join("");
+        )
+        .join("") +
+      (rem > 0
+        ? `<button id="drawer-show-all" class="btn-primary" style="width:100%;margin-top:8px;">عرض كل الأحداث (${list.length})</button>`
+        : "");
   } else {
-    if (!currentGovData.issues.length) {
+    const list = currentGovData.issues || [];
+    if (!list.length) {
       body.innerHTML = `<div class="loading-msg">لا توجد مشكلات مرصودة لهذه المحافظة بعد.</div>`;
       return;
     }
-    body.innerHTML = currentGovData.issues
-      .map(
-        (iss) => `
+    const rem = list.length - limit;
+    body.innerHTML =
+      list
+        .slice(0, limit)
+        .map(
+          (iss) => `
         <div class="drawer-item">
           <div class="badges-row" style="margin-bottom:6px">
             <span class="badge badge-neg">${iss.severity}</span>
@@ -561,24 +720,36 @@ function renderDrawerTab(tab) {
           ${iss.evidence ? `<p>"${iss.evidence}"</p>` : ""}
           <a href="${iss.canonical_url}" target="_blank" rel="noopener">المصدر: ${iss.source_name} ↗</a>
         </div>`
-      )
-      .join("");
+        )
+        .join("") +
+      (rem > 0
+        ? `<button id="drawer-show-all" class="btn-primary" style="width:100%;margin-top:8px;">عرض كل المشكلات (${list.length})</button>`
+        : "");
+  }
+
+  const allBtn = document.getElementById("drawer-show-all");
+  if (allBtn) {
+    allBtn.addEventListener("click", () => renderDrawerTab(tab, true));
   }
 }
 
 function closeDrawer() {
   document.getElementById("gov-drawer").classList.add("hidden");
   document.querySelectorAll(".gov-pill, .globe-gov-label").forEach((b) => b.classList.remove("active"));
+  gsap.to(mapGroup.position, { x: 0, y: 0, duration: 0.9, ease: "power2.out" });
+  gsap.to(camera.position, { x: 0, y: -18, z: 255, duration: 0.95, ease: "power2.out" });
 }
 
 async function loadHighImpact(filter = "new") {
-  let url = "/api/high-impact?limit=24";
+  let url = "/api/high-impact?limit=2000";
   if (filter === "new") url += "&only_new_logic=true";
   if (filter === "pos") url += "&label=" + encodeURIComponent("إيجابي محتمل");
   if (filter === "neg") url += "&label=" + encodeURIComponent("سلبي محتمل");
 
   const grid = document.getElementById("high-impact-grid");
+  const moreWrap = document.getElementById("impact-more-wrap");
   grid.innerHTML = `<div class="loading-msg">جاري تحميل الأخبار عالية الأثر...</div>`;
+  if (moreWrap) moreWrap.innerHTML = "";
 
   const res = await fetch(url);
   const data = await res.json();
@@ -586,9 +757,11 @@ async function loadHighImpact(filter = "new") {
     grid.innerHTML = `<div class="loading-msg">لا توجد تنبيهات مطابقة لهذا الفلتر حاليًا.</div>`;
     return;
   }
-  grid.innerHTML = data.alerts
-    .map(
-      (al) => `
+  renderPaginatedList(
+    data.alerts,
+    grid,
+    moreWrap,
+    (al) => `
       <article class="alert-card">
         <div class="badges-row">
           <span class="badge ${al.impact_label.includes("إيجابي") ? "badge-pos" : "badge-neg"}">${al.impact_label}</span>
@@ -604,58 +777,26 @@ async function loadHighImpact(filter = "new") {
           <a href="${al.canonical_url}" target="_blank" rel="noopener">قراءة المقال ↗</a>
         </div>
       </article>`
-    )
-    .join("");
-}
-
-async function loadClusters() {
-  const res = await fetch("/api/clusters?limit=12");
-  const data = await res.json();
-  const grid = document.getElementById("clusters-grid");
-  if (!data.clusters.length) {
-    grid.innerHTML = `<div class="loading-msg">لا توجد قصص متعددة المصادر بعد.</div>`;
-    return;
-  }
-  grid.innerHTML = data.clusters
-    .map(
-      (cl) => `
-      <article class="alert-card">
-        <div class="badges-row">
-          <span class="badge badge-amber">${cl.unique_media_count} مواقع غطّت القصة</span>
-          <span class="badge">${cl.category}</span>
-          <span class="badge ${cl.egypt_impact_label.includes("إيجابي") ? "badge-pos" : cl.egypt_impact_label.includes("سلبي") ? "badge-neg" : ""}">${cl.egypt_impact_label}</span>
-        </div>
-        <h3>${cl.main_title}</h3>
-        <p class="alert-rationale">${cl.summary}</p>
-        <div class="cluster-sources">
-          ${(cl.sources || [])
-            .map(
-              (s) => `
-            <a class="cluster-src-link" href="${s.canonical_url}" target="_blank" rel="noopener">
-              <span>${s.source_name}: ${s.title.slice(0, 58)}...</span>
-              <span>↗</span>
-            </a>`
-            )
-            .join("")}
-        </div>
-      </article>`
-    )
-    .join("");
+  );
 }
 
 async function loadIssues(severity = "") {
-  let url = "/api/issues?limit=24";
+  let url = "/api/issues?limit=2000";
   if (severity) url += "&severity=" + encodeURIComponent(severity);
   const grid = document.getElementById("issues-grid");
+  const moreWrap = document.getElementById("issues-more-wrap");
   const res = await fetch(url);
   const data = await res.json();
   if (!data.issues || !data.issues.length) {
     grid.innerHTML = `<div class="loading-msg">لا توجد مشكلات مطابقة لهذا الفلتر.</div>`;
+    if (moreWrap) moreWrap.innerHTML = "";
     return;
   }
-  grid.innerHTML = data.issues
-    .map(
-      (iss) => `
+  renderPaginatedList(
+    data.issues,
+    grid,
+    moreWrap,
+    (iss) => `
       <article class="alert-card">
         <div class="badges-row">
           <span class="badge ${iss.severity === "حرج" || iss.severity === "مرتفع" ? "badge-neg" : "badge-amber"}">${iss.severity}</span>
@@ -671,23 +812,26 @@ async function loadIssues(severity = "") {
           <a href="${iss.canonical_url}" target="_blank" rel="noopener">قراءة الخبر ↗</a>
         </div>
       </article>`
-    )
-    .join("");
+  );
 }
 
 async function loadEvents(status = "") {
-  let url = "/api/events?limit=24";
+  let url = "/api/events?limit=2000";
   if (status) url += "&status=" + encodeURIComponent(status);
   const grid = document.getElementById("events-grid");
+  const moreWrap = document.getElementById("events-more-wrap");
   const res = await fetch(url);
   const data = await res.json();
   if (!data.events || !data.events.length) {
     grid.innerHTML = `<div class="loading-msg">لا توجد أحداث مطابقة لهذه المرحلة.</div>`;
+    if (moreWrap) moreWrap.innerHTML = "";
     return;
   }
-  grid.innerHTML = data.events
-    .map(
-      (ev) => `
+  renderPaginatedList(
+    data.events,
+    grid,
+    moreWrap,
+    (ev) => `
       <article class="alert-card">
         <div class="badges-row">
           <span class="badge badge-amber">${ev.event_status}</span>
@@ -703,12 +847,11 @@ async function loadEvents(status = "") {
           <a href="${ev.canonical_url}" target="_blank" rel="noopener">المصدر ↗</a>
         </div>
       </article>`
-    )
-    .join("");
+  );
 }
 
 async function loadEntities(etype = "") {
-  let url = "/api/entities/top?limit=20";
+  let url = "/api/entities/top?limit=18";
   if (etype) url += "&entity_type=" + encodeURIComponent(etype);
   const cloud = document.getElementById("entities-cloud");
   const res = await fetch(url);
@@ -743,11 +886,13 @@ async function selectEntity(entityName, btnEl) {
   box.classList.remove("hidden");
   list.innerHTML = `<div class="loading-msg">جاري تحميل الأخبار...</div>`;
 
-  const res = await fetch(`/api/entities/${encodeURIComponent(entityName)}/articles?limit=12`);
+  const res = await fetch(`/api/entities/${encodeURIComponent(entityName)}/articles?limit=500`);
   const data = await res.json();
-  list.innerHTML = (data.articles || [])
-    .map(
-      (a) => `
+  renderPaginatedList(
+    data.articles || [],
+    list,
+    null,
+    (a) => `
       <article class="alert-card">
         <div class="badges-row">
           <span class="badge">${a.category || ""}</span>
@@ -760,14 +905,109 @@ async function selectEntity(entityName, btnEl) {
           <span>${a.source_name}</span>
           <a href="${a.canonical_url}" target="_blank" rel="noopener">قراءة الخبر ↗</a>
         </div>
-      </article>`
-    )
-    .join("");
+      </article>`,
+    500
+  );
+}
+
+async function loadClusters() {
+  const res = await fetch("/api/clusters?limit=500");
+  const data = await res.json();
+  const grid = document.getElementById("clusters-grid");
+  const moreWrap = document.getElementById("clusters-more-wrap");
+  if (!data.clusters.length) {
+    grid.innerHTML = `<div class="loading-msg">لا توجد قصص متعددة المصادر بعد.</div>`;
+    if (moreWrap) moreWrap.innerHTML = "";
+    return;
+  }
+  renderPaginatedList(
+    data.clusters,
+    grid,
+    moreWrap,
+    (cl) => `
+      <article class="alert-card">
+        <div class="badges-row">
+          <span class="badge badge-amber">${cl.unique_media_count} مواقع غطّت القصة</span>
+          <span class="badge">${cl.category}</span>
+          <span class="badge ${cl.egypt_impact_label.includes("إيجابي") ? "badge-pos" : cl.egypt_impact_label.includes("سلبي") ? "badge-neg" : ""}">${cl.egypt_impact_label}</span>
+        </div>
+        <h3>${cl.main_title}</h3>
+        <p class="alert-rationale">${cl.summary}</p>
+        <div class="cluster-sources">
+          ${(cl.sources || [])
+            .map(
+              (s) => `
+            <a class="cluster-src-link" href="${s.canonical_url}" target="_blank" rel="noopener">
+              <span>${s.source_name}: ${s.title.slice(0, 58)}...</span>
+              <span>↗</span>
+            </a>`
+            )
+            .join("")}
+        </div>
+      </article>`,
+    24
+  );
+}
+
+let currentArticlesCategory = "";
+async function loadAllArticles(q = "", category = currentArticlesCategory) {
+  currentArticlesCategory = category;
+  let url = `/api/articles?limit=3000`;
+  if (q.trim()) url += `&q=${encodeURIComponent(q.trim())}`;
+  if (category) url += `&category=${encodeURIComponent(category)}`;
+
+  const grid = document.getElementById("all-articles-grid");
+  const moreWrap = document.getElementById("all-articles-more-wrap");
+  const totalEl = document.getElementById("all-articles-total");
+  grid.innerHTML = `<div class="loading-msg">جاري تحميل كل الأخبار...</div>`;
+  if (moreWrap) moreWrap.innerHTML = "";
+
+  const res = await fetch(url);
+  const data = await res.json();
+  if (totalEl) totalEl.textContent = (data.total || 0).toLocaleString("ar-EG");
+
+  if (!data.articles || !data.articles.length) {
+    grid.innerHTML = `<div class="loading-msg">لا توجد مقالات مطابقة للبحث.</div>`;
+    return;
+  }
+
+  renderPaginatedList(
+    data.articles,
+    grid,
+    moreWrap,
+    (a) => `
+      <article class="alert-card">
+        <div class="badges-row">
+          <span class="badge">${a.category || ""}</span>
+          <span class="badge">${a.source_name || ""}</span>
+          ${a.impact_label ? `<span class="badge ${a.impact_label.includes("إيجابي") ? "badge-pos" : a.impact_label.includes("سلبي") ? "badge-neg" : ""}">${a.impact_label}</span>` : ""}
+          ${a.impact_level ? `<span class="badge badge-amber">${a.impact_level}</span>` : ""}
+        </div>
+        <h3>${a.title}</h3>
+        <p class="alert-rationale">${a.summary_generated || ""}</p>
+        <div class="card-foot">
+          <span>${a.source_name}</span>
+          <a href="${a.canonical_url}" target="_blank" rel="noopener">قراءة المقال ↗</a>
+        </div>
+      </article>`,
+    36
+  );
+}
+
+function switchWorkspaceTab(targetId) {
+  document.querySelectorAll(".wtab").forEach((t) => {
+    const isAct = t.dataset.target === targetId;
+    t.classList.toggle("active", isAct);
+    t.setAttribute("aria-selected", isAct ? "true" : "false");
+  });
+  document.querySelectorAll(".wpanel").forEach((p) => {
+    p.classList.toggle("active", p.id === targetId);
+  });
 }
 
 // --- Wire Up Events ---
 document.addEventListener("DOMContentLoaded", () => {
-  initGlobe();
+  initEgyptMap();
   loadOverview();
   loadGovernorates();
   loadHighImpact("new");
@@ -775,28 +1015,250 @@ document.addEventListener("DOMContentLoaded", () => {
   loadEvents();
   loadEntities();
   loadClusters();
+  loadAllArticles();
 
-  document.getElementById("btn-zoom-egypt").addEventListener("click", () => selectGovernorate("القاهرة"));
-  document.getElementById("hero-enter-egypt").addEventListener("click", () => {
-    autoRotate = false;
-    gsap.to("#hero-overlay", { opacity: 0, x: 40, duration: 0.45, pointerEvents: "none" });
-    gsap.to(globeGroup.position, { x: 0, y: 4, duration: 1.0, ease: "power3.inOut" });
-    gsap.to(camera.position, { x: 0, y: 6, z: 235, duration: 1.05, ease: "power3.inOut" });
+  const motionBtn = document.getElementById("btn-toggle-motion");
+  if (motionBtn) {
+    const syncMotionLabel = () => {
+      motionBtn.textContent = reducedMotion ? "تشغيل الحركة" : "إيقاف الحركة";
+      motionBtn.setAttribute("aria-pressed", reducedMotion ? "true" : "false");
+    };
+    syncMotionLabel();
+    motionBtn.addEventListener("click", () => {
+      reducedMotion = !reducedMotion;
+      syncMotionLabel();
+    });
+  }
+
+  const menuBtn = document.getElementById("mobile-menu-btn");
+  const topNav = document.getElementById("top-nav");
+  if (menuBtn && topNav) {
+    menuBtn.addEventListener("click", () => {
+      const open = topNav.classList.toggle("open");
+      menuBtn.setAttribute("aria-expanded", open ? "true" : "false");
+    });
+  }
+
+  const govSel = document.getElementById("gov-mobile-select");
+  if (govSel) {
+    govSel.addEventListener("change", (e) => {
+      if (e.target.value) selectGovernorate(e.target.value);
+    });
+  }
+
+function openRagChat() {
+  const panel = document.getElementById("rag-chat-panel");
+  if (!panel) return;
+  panel.classList.remove("hidden");
+  gsap.fromTo(panel, { y: 24, opacity: 0 }, { y: 0, opacity: 1, duration: 0.28, ease: "power2.out" });
+  const inp = document.getElementById("rag-input");
+  if (inp) inp.focus();
+}
+
+function closeRagChat() {
+  const panel = document.getElementById("rag-chat-panel");
+  if (panel) panel.classList.add("hidden");
+}
+
+function appendRagMessage(role, htmlText, sources = []) {
+  const container = document.getElementById("rag-messages");
+  if (!container) return null;
+
+  const msg = document.createElement("div");
+  msg.className = `rag-msg ${role === "user" ? "rag-msg-user" : "rag-msg-bot"}`;
+
+  let sourcesHtml = "";
+  if (sources && sources.length) {
+    sourcesHtml = `
+      <div class="rag-sources">
+        <span class="rag-sources-title">المصادر المعتمدة (${sources.length}):</span>
+        ${sources
+          .slice(0, 4)
+          .map(
+            (s) => `
+          <a class="rag-source-item" href="${s.canonical_url}" target="_blank" rel="noopener">
+            <span><strong>${s.source_name || "مصدر"}:</strong> ${(s.title || "").slice(0, 56)}...</span>
+            <span>↗</span>
+          </a>`
+          )
+          .join("")}
+      </div>
+    `;
+  }
+
+  msg.innerHTML = `<div class="rag-bubble">${htmlText}</div>${sourcesHtml}`;
+  container.appendChild(msg);
+  container.scrollTop = container.scrollHeight;
+  return msg;
+}
+
+async function handleRagQuestion(questionText) {
+  const q = questionText.trim();
+  if (!q) return;
+
+  const govFilter = (document.getElementById("rag-gov-filter") || {}).value || "";
+  const catFilter = (document.getElementById("rag-cat-filter") || {}).value || "";
+
+  appendRagMessage("user", q);
+  const thinkingMsg = appendRagMessage(
+    "bot",
+    `<span class="rag-typing"><span class="pulse-dot"></span> جاري البحث في أخبار مصر وتجهيز الإجابة...</span>`
+  );
+
+  try {
+    // 1. Try dedicated RAG backend endpoint if available
+    const ragRes = await fetch("/api/rag/ask", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ question: q, governorate: govFilter || null, category: catFilter || null }),
+    });
+
+    if (ragRes.ok) {
+      const data = await ragRes.json();
+      if (thinkingMsg) thinkingMsg.remove();
+      appendRagMessage("bot", data.answer || "تم استرجاع النتائج.", data.sources || []);
+      return;
+    }
+
+    // 2. Live Database Preview Fallback (while RAG engine is being wired)
+    let sources = [];
+    if (govFilter) {
+      const gRes = await fetch(`/api/governorates/${encodeURIComponent(govFilter)}?limit=8`);
+      const gData = await gRes.json();
+      sources = gData.articles || [];
+    } else if (q.includes("مشكل") || q.includes("أزم")) {
+      const iRes = await fetch("/api/issues?limit=6");
+      const iData = await iRes.json();
+      sources = (iData.issues || []).map((x) => ({
+        title: x.issue_description,
+        summary_generated: x.evidence || x.title,
+        source_name: x.source_name,
+        canonical_url: x.canonical_url,
+      }));
+    } else if (q.includes("أثر") || q.includes("مهم")) {
+      const hRes = await fetch("/api/high-impact?only_new_logic=true&limit=6");
+      const hData = await hRes.json();
+      sources = (hData.alerts || []).map((x) => ({
+        title: x.title,
+        summary_generated: x.rationale,
+        source_name: x.source_name,
+        canonical_url: x.canonical_url,
+      }));
+    } else {
+      const keyword = q
+        .replace(/ما|أهم|أبرز|آخر|أخبار|في|عن|اليوم|مصر|\؟/g, " ")
+        .trim()
+        .split(/\s+/)[0] || "";
+      let aUrl = `/api/articles?limit=6`;
+      if (keyword.length >= 3) aUrl += `&q=${encodeURIComponent(keyword)}`;
+      if (catFilter) aUrl += `&category=${encodeURIComponent(catFilter)}`;
+      const aRes = await fetch(aUrl);
+      const aData = await aRes.json();
+      sources = aData.articles || [];
+    }
+
+    if (thinkingMsg) thinkingMsg.remove();
+    if (!sources.length) {
+      appendRagMessage("bot", "لم أجد أخبارًا مطابقة لهذا السؤال في الفلتر الحالي؛ جرّب تغيير القسم أو المحافظة.");
+      return;
+    }
+
+    const bullets = sources
+      .slice(0, 3)
+      .map((s) => `• <strong>${s.title}</strong>: ${s.summary_generated || ""}`)
+      .join("<br/>");
+    appendRagMessage(
+      "bot",
+      `إليك أبرز ما ورد في قاعدة البيانات حول سؤالك:<br/><br/>${bullets}`,
+      sources
+    );
+  } catch (err) {
+    if (thinkingMsg) thinkingMsg.remove();
+    appendRagMessage("bot", "حدث خطأ أثناء الاتصال بالسيرفر؛ تأكد من تشغيل الـ API.");
+  }
+}
+
+  window.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") {
+      closeDrawer();
+      closeRagChat();
+      const entBox = document.getElementById("entity-articles-box");
+      if (entBox) entBox.classList.add("hidden");
+    }
   });
-  document.getElementById("btn-reset-globe").addEventListener("click", resetGlobeView);
+
+  const openRagBtn = document.getElementById("btn-open-rag");
+  if (openRagBtn) openRagBtn.addEventListener("click", openRagChat);
+  const ragFab = document.getElementById("rag-fab");
+  if (ragFab) ragFab.addEventListener("click", openRagChat);
+  const ragClose = document.getElementById("rag-close-btn");
+  if (ragClose) ragClose.addEventListener("click", closeRagChat);
+  const ragClear = document.getElementById("rag-clear-btn");
+  if (ragClear) {
+    ragClear.addEventListener("click", () => {
+      const box = document.getElementById("rag-messages");
+      if (box) {
+        box.innerHTML = `<div class="rag-msg rag-msg-bot"><div class="rag-bubble">تم مسح المحادثة. اسألني أي سؤال جديد عن أخبار ومحافظات مصر!</div></div>`;
+      }
+    });
+  }
+
+  document.querySelectorAll(".rag-chip").forEach((chip) => {
+    chip.addEventListener("click", () => handleRagQuestion(chip.dataset.q));
+  });
+
+  const ragForm = document.getElementById("rag-form");
+  if (ragForm) {
+    ragForm.addEventListener("submit", (e) => {
+      e.preventDefault();
+      const inp = document.getElementById("rag-input");
+      if (!inp || !inp.value.trim()) return;
+      const val = inp.value;
+      inp.value = "";
+      handleRagQuestion(val);
+    });
+  }
+  document.getElementById("btn-reset-globe").addEventListener("click", resetMapView);
   document.getElementById("drawer-close").addEventListener("click", closeDrawer);
   document.getElementById("entity-box-close").addEventListener("click", () => {
     document.getElementById("entity-articles-box").classList.add("hidden");
     document.querySelectorAll(".entity-chip").forEach((b) => b.classList.remove("active"));
   });
 
+  document.getElementById("gov-search-input").addEventListener("input", (e) => {
+    renderGovPills(e.target.value);
+  });
+
+  let searchTimer = null;
+  document.getElementById("all-articles-search").addEventListener("input", (e) => {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => loadAllArticles(e.target.value, currentArticlesCategory), 280);
+  });
+
+  document.querySelectorAll(".abtn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      document.querySelectorAll(".abtn").forEach((b) => b.classList.remove("active"));
+      btn.classList.add("active");
+      const q = document.getElementById("all-articles-search").value;
+      loadAllArticles(q, btn.dataset.acat);
+    });
+  });
+
+  document.querySelectorAll(".wtab").forEach((tab) => {
+    tab.addEventListener("click", () => switchWorkspaceTab(tab.dataset.target));
+  });
+
+  document.querySelectorAll("[data-jump-tab]").forEach((link) => {
+    link.addEventListener("click", () => switchWorkspaceTab(link.dataset.jumpTab));
+  });
+
   document.querySelectorAll(".dtab").forEach((btn) => {
     btn.addEventListener("click", () => renderDrawerTab(btn.dataset.tab));
   });
 
-  document.querySelectorAll("#high-impact .fbtn").forEach((btn) => {
+  document.querySelectorAll("#tab-impact .fbtn").forEach((btn) => {
     btn.addEventListener("click", () => {
-      document.querySelectorAll("#high-impact .fbtn").forEach((b) => b.classList.remove("active"));
+      document.querySelectorAll("#tab-impact .fbtn").forEach((b) => b.classList.remove("active"));
       btn.classList.add("active");
       loadHighImpact(btn.dataset.filter);
     });
@@ -826,7 +1288,6 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   });
 
-  // Silent Auto-Refresh every 60s
   setInterval(() => {
     loadOverview();
   }, 60000);

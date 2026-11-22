@@ -131,7 +131,7 @@ def get_overview() -> dict[str, Any]:
 
 @app.get("/api/high-impact")
 def get_high_impact(
-    limit: int = Query(default=40, ge=1, le=200),
+    limit: int = Query(default=500, ge=1, le=5000),
     label: str | None = Query(default=None),
     only_new_logic: bool = Query(default=False),
 ) -> dict[str, Any]:
@@ -250,7 +250,7 @@ def get_governorates_summary() -> dict[str, Any]:
 
 
 @app.get("/api/governorates/{gov_name}")
-def get_governorate_details(gov_name: str, limit: int = Query(default=30, ge=1, le=100)) -> dict[str, Any]:
+def get_governorate_details(gov_name: str, limit: int = Query(default=1000, ge=1, le=5000)) -> dict[str, Any]:
     """Return live articles, events, and issues for a specific Egyptian governorate."""
     with _get_conn() as conn, conn.cursor() as cur:
         cur.execute(
@@ -353,7 +353,7 @@ def get_governorate_details(gov_name: str, limit: int = Query(default=30, ge=1, 
 
 
 @app.get("/api/clusters")
-def get_story_clusters(limit: int = Query(default=15, ge=1, le=50)) -> dict[str, Any]:
+def get_story_clusters(limit: int = Query(default=200, ge=1, le=2000)) -> dict[str, Any]:
     with _get_conn() as conn, conn.cursor() as cur:
         cur.execute(
             """
@@ -393,7 +393,7 @@ def get_story_clusters(limit: int = Query(default=15, ge=1, le=50)) -> dict[str,
 def get_all_issues(
     severity: str | None = Query(default=None),
     sector: str | None = Query(default=None),
-    limit: int = Query(default=30, ge=1, le=120),
+    limit: int = Query(default=500, ge=1, le=5000),
 ) -> dict[str, Any]:
     clauses: list[str] = []
     params: list[Any] = []
@@ -443,7 +443,7 @@ def get_all_issues(
 @app.get("/api/events")
 def get_all_events(
     status: str | None = Query(default=None),
-    limit: int = Query(default=30, ge=1, le=120),
+    limit: int = Query(default=500, ge=1, le=5000),
 ) -> dict[str, Any]:
     clauses: list[str] = []
     params: list[Any] = []
@@ -520,7 +520,7 @@ def get_top_entities(
 @app.get("/api/entities/{entity_name}/articles")
 def get_entity_articles(
     entity_name: str,
-    limit: int = Query(default=15, ge=1, le=50),
+    limit: int = Query(default=300, ge=1, le=2000),
 ) -> dict[str, Any]:
     with _get_conn() as conn, conn.cursor() as cur:
         cur.execute(
@@ -546,4 +546,88 @@ def get_entity_articles(
         )
         rows = [dict(r) for r in cur.fetchall()]
     return {"entity_name": entity_name, "articles": rows}
+
+
+@app.get("/api/articles")
+def get_all_articles(
+    q: str | None = Query(default=None),
+    category: str | None = Query(default=None),
+    source: str | None = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=5000),
+    offset: int = Query(default=0, ge=0),
+) -> dict[str, Any]:
+    clauses: list[str] = []
+    params: list[Any] = []
+    if q and q.strip():
+        like_pat = f"%{q.strip()}%"
+        clauses.append("(aa.title ILIKE %s OR aa.summary_generated ILIKE %s)")
+        params.extend([like_pat, like_pat])
+    if category and category.strip():
+        clauses.append("aa.category = %s")
+        params.append(category.strip())
+    if source and source.strip():
+        clauses.append("aa.source_name = %s")
+        params.append(source.strip())
+    where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+
+    with _get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            f"SELECT COUNT(*) AS total FROM analyzed_articles aa {where_sql};",
+            params,
+        )
+        total = int((cur.fetchone() or {}).get("total", 0))
+
+        cur.execute(
+            f"""
+            SELECT
+                aa.id,
+                aa.canonical_url,
+                aa.source_name,
+                aa.title,
+                aa.published_at,
+                aa.category,
+                aa.tone,
+                aa.summary_generated,
+                cia.impact_label,
+                cia.impact_level,
+                cia.impact_scope,
+                cia.confidence_score
+            FROM analyzed_articles aa
+            LEFT JOIN country_impact_assessments cia
+                ON cia.article_id = aa.id AND cia.country_code = 'EG'
+            {where_sql}
+            ORDER BY aa.published_at DESC NULLS LAST
+            LIMIT %s OFFSET %s;
+            """,
+            params + [limit, offset],
+        )
+        rows = [dict(r) for r in cur.fetchall()]
+    return {"total": total, "count": len(rows), "articles": rows}
+
+
+from pydantic import BaseModel
+from src.rag_engine import answer_question_with_rag, sync_rag_chunks_and_embeddings
+
+
+class RagAskRequest(BaseModel):
+    question: str
+    governorate: str | None = None
+    category: str | None = None
+    top_k: int = 5
+
+
+@app.post("/api/rag/ask")
+def rag_ask(req: RagAskRequest) -> dict[str, Any]:
+    return answer_question_with_rag(
+        question=req.question,
+        governorate=req.governorate or None,
+        category=req.category or None,
+        top_k=max(1, min(10, req.top_k)),
+    )
+
+
+@app.post("/api/rag/sync")
+def rag_sync() -> dict[str, Any]:
+    return sync_rag_chunks_and_embeddings()
+
 

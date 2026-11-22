@@ -1,6 +1,6 @@
-# منصة متابعة وتحليل الأخبار المصرية (Airflow + Qwen + RAG)
+# منصة متابعة وتحليل الأخبار المصرية (Airflow + Qwen Gold + PostgreSQL + 3D Map UI + Hybrid RAG)
 
-منصة أوتوماتيكية لجمع الأخبار المصرية، تنظيفها وتطبيعها لغويًا، تحليلها باستخدام نموذج **`Qwen 2.5`** عبر **Ollama** (مع حساب درجة الثقة برمجيًا)، ثم تجهيزها للرفع إلى قاعدة البيانات ومحرك الـ RAG.
+منصة متكاملة لجمع الأخبار المصرية من 5 مصادر كل 15 دقيقة، تنظيفها وتطبيعها لغويًا، تحليلها باستخدام نموذج **`Qwen 2.5 (qwen2.5:3b)`** عبر **Ollama** لاستخراج (الملخص التفصيلي، الكيانات، الأحداث والمواقع، المشكلات الخدمية وخطورتها، وتقييم الأثر على مصر)، ثم تخزين مخرجات طبقة الـ **Gold** في قاعدة بيانات **PostgreSQL (`egypt_news_gold`)** وعرضها في **واجهة خريطة مصر التفاعلية ثلاثية الأبعاد (Three.js + GSAP)** مع **مساعد ذكي (Hybrid Vector RAG)** للإجابة الموثقة بالمصادر.
 
 ---
 
@@ -8,55 +8,88 @@
 
 ```text
 egypt-news-rag/
+├── api/
+│   └── app.py                            # FastAPI Backend لواجهة خريطة مصر والـ Hybrid RAG
 ├── config/
-│   └── sources.json                      # إعدادات المصادر الافتراضية (Recent + RSS) القابلة للتعديل
+│   └── sources.json                      # إعدادات المصادر الافتراضية (اليوم السابع، المصري اليوم، القاهرة 24، مصراوي، الشروق)
 ├── dags/
-│   └── egypt_news_scraping_dag.py        # Airflow DAG (6 مهام) يعمل كل 15 دقيقة بتوقيت القاهرة
+│   └── egypt_news_scraping_dag.py        # Airflow DAG (7 مهام) يعمل كل 15 دقيقة بتوقيت القاهرة
+├── sql/
+│   └── gold_schema.sql                   # مخطط قاعدة البيانات (12 جدولًا لطبقة Gold والـ RAG Chunks)
 ├── src/
 │   ├── scraper.py                        # محرك السحب الهجين (Recent HTML + Pagination + Sub-RSS)
 │   ├── transform.py                      # تطبيع العربية، توحيد التواريخ، فلتر الحداثة (14 يومًا) والقصير (< 35 كلمة)
 │   ├── storage.py                        # الكتابة الذرّية (Atomic Write)، منع التكرار، ومؤشرات جودة المصادر (source_health)
-│   ├── llm_analyzer.py                   # تحليل الأخبار بـ Qwen (تصنيف، تلخيص، كيانات، نبرة، أثر على مصر + سكور 0-100)
-│   └── gold_features.py                  # تجميع الأحداث (story_clusters)، النشرة اليومية (daily_digest)، والتنبيهات
-├── data/
-│   ├── llm_input_articles.json           # المدخل النظيف للموديل (5 حقول فقط بدون صور أو بيانات تشغيل)
-│   ├── latest_run_summary.json           # تقرير آخر تشغيل متضمنًا مؤشرات جودة كل موقع (source_health)
-│   ├── bronze/                           # السجلات الخام لكل عملية سحب
-│   ├── silver/                           # المخزن الرئيسي الموحد (all_articles_master.json)
-│   └── gold/                             # مخرجات Qwen (gold_analyzed_articles.json, story_clusters, daily_digest, alerts)
-├── docker-compose.yaml                   # تشغيل Airflow وPostgreSQL بتوقيت القاهرة على منفذ 8085
+│   ├── llm_analyzer.py                   # تحليل Qwen (ملخص، كيانات، أثر، أحداث، مشكلات، تأصيل الأدلة، وقفل GPU)
+│   ├── gold_features.py                  # تجميع القصص (story_clusters)، النشرة اليومية (daily_digest)، والتنبيهات الذكية
+│   ├── db_loader.py                      # رفع مخرجات طبقة Gold ومزامنة الـ RAG Chunks إلى PostgreSQL
+│   ├── rag_engine.py                     # التقطيع الدلالي، Embeddings (paraphrase-multilingual)، والـ Hybrid RAG
+│   └── evaluate_pipeline.py              # توليد تقرير التقييم والأداء الرسمي (evaluation_report.json)
+├── web/
+│   ├── index.html                        # واجهة مركز الرصد وخريطة مصر ثلاثية الأبعاد والتبويبات الـ 6 والشات بوت
+│   ├── styles.css                        # تصميم RTL متجاوب مع دعم إمكانية الوصول (Accessibility)
+│   └── app.js                            # خريطة مصر 3D (Three.js + GSAP) والتفاعل اللحظي مع FastAPI
+├── .env.example                          # نموذج إعدادات الاتصال بقاعدة بيانات PostgreSQL
+├── docker-compose.yaml                   # تشغيل Airflow بتوقيت القاهرة على منفذ 8085
+├── requirements.txt                      # المكتبات المطلوبة
 └── run_scraper.py                        # تشغيل السحب والتنظيف مباشرة من التيرمنال
 ```
 
 ---
 
-## 1. تشغيل المشروع عبر Docker (Airflow)
+## 1. معمارية قاعدة البيانات (`egypt_news_gold` — 12 جدولًا)
 
-من داخل فولدر المشروع:
+يتم تخزين مخرجات طبقة **Gold** فقط داخل PostgreSQL (بورت `5433` محليًا):
+1. `analyzed_articles`: الجدول الرئيسي للمقالات المحللة (`canonical_url UNIQUE`).
+2. `article_entities`: الكيانات المستخرجة (`شخص`, `مؤسسة`, `دولة`, `مكان`, `مشروع`).
+3. `country_impact_assessments`: تقييم الأثر (`impact_label`, `impact_level`, `impact_scope`, `rationale`, `evidence`, `confidence_score`).
+4. `article_events`: الوقائع والأحداث الفعلية (`event_title`, `event_type`, `action`, `event_status`, `event_date`, `expected_outcome`).
+5. `event_locations`: المواقع الجغرافية للأحداث (`governorate`, `city` موحدة على الـ 27 محافظة الرسمية).
+6. `article_issues`: المشكلات والأزمات المرصودة (`sector`, `issue_type`, `severity`, `governorate_name`, `evidence`).
+7. `high_impact_alerts`: التنبيهات عالية الأثر المبنية على الأثر القومي أو تعدد المصادر أو المشكلات الحرجة (`alert_reason`).
+8. `story_clusters`: القصص المجمعة عبر المواقع المصرية.
+9. `story_cluster_articles`: جدول الربط بين القصص المجمعة والمقالات.
+10. `daily_digests`: أرشيف النشرات اليومية التلخيصية (`JSONB`).
+11. `llm_failures`: سجل أعطال التحليل لإعادة المعالجة والمراقبة.
+12. `article_chunks`: الـ Chunks الدلالية ومتجهات الـ Embeddings (`FLOAT4[]`) لمحرك الـ Hybrid RAG.
+
+---
+
+## 2. تشغيل Airflow (الأتمتة كل 15 دقيقة)
 
 ```powershell
 docker compose up -d
 ```
 
-* **رابط واجهة Airflow:** `http://localhost:8085`
-* **اسم المستخدم / كلمة المرور:** `admin` / `admin`
-* **اسم الـ DAG:** `egypt_news_dynamic_scraper`
-* **الجدولة:** كل **15 دقيقة (`*/15 * * * *`)** بتوقيت القاهرة (`Africa/Cairo`)، مع `max_active_runs=1`.
-
-### مهام الـ DAG الست المتسلسلة:
-1. `resolve_dynamic_sources`: قراءة الروابط ديناميكيًا (من `Trigger DAG w/ config` أو `Airflow Variables` أو `config/sources.json`).
-2. `extract_bronze_raw_news`: سحب الأخبار الجديدة فقط على التوازي وتخطي المسحوب مسبقًا.
-3. `transform_and_clean_to_silver`: تنظيف النصوص، استبعاد القصير (`< 35` كلمة) والقديم (`> 14` يومًا)، وتحديث `llm_input_articles.json` بكتابة ذرّية آمنة.
-4. `analyze_new_articles_with_qwen`: إرسال المقالات الجديدة إلى **Qwen (`qwen2.5:3b`)** عبر Ollama وإنتاج طبقة `Gold` مع `confidence_score` محسوب برمجيًا من `100`.
-5. `generate_gold_insights_and_alerts`: توليد تجميع الأحداث (`story_clusters.json`)، والنشرة اليومية (`daily_digest.json`)، والتنبيهات (`high_impact_alerts.json`).
-6. `log_scraping_report`: طباعة التقرير النهائي ومؤشرات جودة الاستخراج (`source_health`).
+- **رابط Airflow:** `http://localhost:8085` (`admin` / `admin`)
+- **المهام السبع في `egypt_news_dynamic_scraper`:**
+  `resolve_dynamic_sources` ← `extract_bronze_raw_news` ← `transform_and_clean_to_silver` ← `analyze_new_articles_with_qwen` ← `generate_gold_insights_and_alerts` ← `load_gold_to_postgres` ← `log_scraping_report`.
 
 ---
 
-## 2. تشغيل تحليل `Qwen` يدويًا من التيرمنال
+## 3. تشغيل الواجهة التفاعلية ومحرك الـ Hybrid RAG
+
+تأكد من تحميل موديلات Ollama المطلوبة:
 
 ```powershell
-python -m src.llm_analyzer --limit 100   # تحليل 100 مقال جديد (--limit 0 لتحليل الكل)
+ollama pull qwen2.5:3b
+ollama pull paraphrase-multilingual
 ```
 
-*(يتطلب تشغيل Ollama محليًا مع تحميل الموديل: `ollama pull qwen2.5:3b`).*
+ثم شغّل سيرفر FastAPI والواجهة التفاعلية:
+
+```powershell
+python -m uvicorn api.app:app --host 0.0.0.0 --port 8000
+```
+
+- **رابط الموقع:** `http://localhost:8000`
+- **توثيق الـ API (Swagger):** `http://localhost:8000/docs`
+
+---
+
+## 4. توليد تقرير التقييم والأداء
+
+```powershell
+python src/evaluate_pipeline.py
+```
+يُخرِج تقريرًا موثقًا في `data/gold/evaluation_report.json` يتضمن إحصائيات الجداول، نسبة تأصيل الأدلة، تغطية الـ Embeddings، وزمن استرجاع الـ Hybrid RAG.

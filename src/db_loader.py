@@ -602,6 +602,13 @@ def load_gold_articles_to_postgres(
             failures_loaded = _load_llm_failures(cur)
 
         conn.commit()
+        rag_stats = {"chunks_embedded": 0}
+        try:
+            from src.rag_engine import sync_rag_chunks_and_embeddings
+
+            rag_stats = sync_rag_chunks_and_embeddings(batch_limit=200)
+        except Exception:
+            pass
         return {
             "articles_upserted": articles_upserted,
             "entities_loaded": entities_loaded,
@@ -614,6 +621,7 @@ def load_gold_articles_to_postgres(
             "cluster_articles_loaded": cluster_articles_loaded,
             "digests_loaded": digests_loaded,
             "failures_loaded": failures_loaded,
+            "rag_chunks_embedded": rag_stats.get("chunks_embedded", 0),
         }
     except Exception:
         conn.rollback()

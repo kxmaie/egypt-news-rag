@@ -8,253 +8,311 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700;800;900&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="/static/styles.css" />
-  <!-- Three.js & GSAP -->
   <script src="https://unpkg.com/three@0.160.0/build/three.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/gsap.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/ScrollTrigger.min.js"></script>
 </head>
 <body>
-  <!-- Top Navigation -->
-  <header class="navbar">
+  <!-- 1. Top Command Bar (with Mobile Menu & Reduced Motion Toggle) -->
+  <header class="navbar" role="banner">
     <div class="brand">
-      <span class="brand-dot"></span>
+      <span class="brand-dot" aria-hidden="true"></span>
       <span class="brand-name">رادار أخبار مصر</span>
-      <span class="brand-tag">GOLD LIVE</span>
+      <span class="brand-tag" title="تحليل ذكي كل 15 دقيقة من 5 مصادر مصرية">مباشر</span>
     </div>
-    <nav class="nav-links">
-      <a href="#globe-hero">الكوكب والمحافظات</a>
-      <a href="#high-impact">عالي الأثر</a>
-      <a href="#issues-radar">رادار المشكلات</a>
-      <a href="#events-tracker">الأحداث</a>
-      <a href="#trending-entities">ترند الكيانات</a>
-      <a href="#daily-digest">النشرة اليومية</a>
-      <a href="#clusters">القصص المشتركة</a>
+
+    <button id="mobile-menu-btn" class="mobile-menu-btn" aria-label="فتح القائمة" aria-expanded="false">
+      ☰ القائمة
+    </button>
+
+    <nav id="top-nav" class="nav-links" aria-label="التنقل الرئيسي">
+      <a href="#globe-command">خريطة المحافظات</a>
+      <a href="#workspace" data-jump-tab="tab-impact">عالي الأثر</a>
+      <a href="#workspace" data-jump-tab="tab-issues">رادار المشكلات</a>
+      <a href="#workspace" data-jump-tab="tab-events">الأحداث</a>
+      <a href="#workspace" data-jump-tab="tab-digest">النشرة والترندات</a>
+      <a href="#workspace" data-jump-tab="tab-clusters">القصص المشتركة</a>
+      <a href="#workspace" data-jump-tab="tab-all-articles">كل الأخبار</a>
     </nav>
+
     <div class="nav-actions">
-      <button id="btn-reset-globe" class="btn-outline">دوران تلقائي للكوكب</button>
-      <button id="btn-zoom-egypt" class="btn-primary">توسيط القاهرة 🇪🇬</button>
+      <button id="btn-toggle-motion" class="btn-outline" aria-pressed="false" title="إيقاف أو تشغيل المؤثرات الحركية للأجهزة البطيئة">
+        إيقاف الحركة
+      </button>
+      <button id="btn-reset-globe" class="btn-outline" aria-label="إعادة ضبط عرض خريطة مصر كاملة">
+        الخريطة كاملة
+      </button>
+      <button id="btn-open-rag" class="btn-primary" aria-label="فتح المساعد الذكي للأسئلة والأجوبة">
+        ✦ اسأل المساعد الذكي
+      </button>
     </div>
   </header>
 
-  <!-- Hero + 3D Interactive Globe Section -->
-  <section id="globe-hero" class="hero-section">
-    <div id="globe-canvas-wrap" class="globe-canvas-wrap">
-      <canvas id="globe-canvas"></canvas>
-      <!-- 3D Projected Arabic Governorate Labels right on the Globe -->
-      <div id="globe-labels" class="globe-labels"></div>
-      <!-- Hover Tooltip -->
-      <div id="globe-tooltip" class="globe-tooltip hidden"></div>
-    </div>
+  <!-- 2. Split-Screen Hero Command Center -->
+  <section id="globe-command" class="command-hero" aria-label="خريطة الرصد الذكي لمحافظات مصر">
+    <div class="container command-grid">
+      <!-- Right Column: Clear 1-Line Onboarding + Explained KPIs + Accessible Governorate Finder -->
+      <div class="command-panel">
+        <div class="hero-badge">
+          <span class="pulse-dot" aria-hidden="true"></span>
+          <span>النطاق الزمني: آخر 14 يومًا • تحديث تلقائي كل 15 دقيقة (اليوم السابع، المصري اليوم، القاهرة 24، مصراوي، الشروق)</span>
+        </div>
 
-    <!-- Hero Overlay Copy (fades neatly when zoomed into Egypt) -->
-    <div id="hero-overlay" class="hero-overlay">
-      <div class="hero-badge">
-        <span class="pulse-dot"></span>
-        تحديث تلقائي كل 15 دقيقة من 5 مصادر مصرية
-      </div>
-      <h1 class="hero-title">
-        رصد إخباري لمصر،<br />
-        <span>بذكاء حي ولحظي.</span>
-      </h1>
-      <p class="hero-sub">
-        تحليل فوري للأحداث والمشكلات وتأثير الأخبار على مصر — اضغط على أي محافظة على الكوكب لعرض أخبارها وأحداثها ومشكلاتها مباشرة.
-      </p>
-      <div class="hero-cta-row">
-        <button id="hero-enter-egypt" class="btn-primary btn-lg">ادخل إلى محافظات مصر</button>
-        <a href="#high-impact" class="btn-outline btn-lg">تنبيهات عالي الأثر</a>
-      </div>
-    </div>
+        <h1 class="hero-title">
+          اعرف ما يحدث في مصر الآن<br />
+          <span>حسب المحافظة أو درجة الأثر</span>
+        </h1>
+        <p class="hero-sub">
+          <strong>كيف تبدأ؟</strong> اختر أي محافظة من الخريطة لعرض أخبارها ومشكلاتها، أو انتقل للأسفل لتصفح أهم الأخبار القومية عالية الأثر.
+        </p>
 
-    <!-- Floating Governorate Quick Bar (bottom of hero) -->
-    <div class="gov-dock">
-      <div class="gov-dock-header">
-        <span>اختر محافظة (اضغط على النقطة المضيئة أو الاسم):</span>
-        <span id="gov-dock-hint" class="gov-dock-hint">اسحب لتدوير الكوكب • اضغط على المحافظة للتفاصيل</span>
-      </div>
-      <div id="gov-pills" class="gov-pills"></div>
-    </div>
+        <!-- Bento KPIs with Clear Definitions & Timeframe -->
+        <div class="bento-kpis" role="region" aria-label="مؤشرات الرصد الرئيسية">
+          <div class="bento-kpi">
+            <div class="kpi-top">
+              <strong id="kpi-articles">0</strong>
+              <span class="info-pill" title="إجمالي الأخبار الفريدة بعد التنظيف وتحليلها بنموذج Qwen">ⓘ</span>
+            </div>
+            <span class="kpi-title">مقال محلل</span>
+            <small class="kpi-desc">ملخص ومصنف من 5 جرائد</small>
+          </div>
 
-    <!-- Governorate Live Intelligence Drawer -->
-    <aside id="gov-drawer" class="gov-drawer hidden">
-      <div class="drawer-header">
-        <div>
-          <span class="drawer-eyebrow">رادار المحافظة</span>
-          <h2 id="drawer-gov-name">القاهرة</h2>
-        </div>
-        <button id="drawer-close" class="drawer-close" aria-label="إغلاق">✕</button>
-      </div>
-      <div class="drawer-stats">
-        <div class="mini-stat"><strong id="d-articles-cnt">0</strong><span>مقال</span></div>
-        <div class="mini-stat"><strong id="d-events-cnt">0</strong><span>حدث</span></div>
-        <div class="mini-stat"><strong id="d-issues-cnt">0</strong><span>مشكلة</span></div>
-      </div>
-      <div class="drawer-tabs">
-        <button class="dtab active" data-tab="articles">الأخبار</button>
-        <button class="dtab" data-tab="events">الأحداث</button>
-        <button class="dtab" data-tab="issues">المشكلات</button>
-      </div>
-      <div id="drawer-body" class="drawer-body">
-        <div class="loading-msg">جاري تحميل بيانات المحافظة...</div>
-      </div>
-    </aside>
-  </section>
+          <div class="bento-kpi">
+            <div class="kpi-top">
+              <strong id="kpi-alerts" class="accent-amber">0</strong>
+              <span class="info-pill" title="أخبار ذات أثر قومي مرتفع، أو غطاها موقعان فأكثر، أو ترصد أزمة حرجة">ⓘ</span>
+            </div>
+            <span class="kpi-title">تنبيه عالي الأثر</span>
+            <small class="kpi-desc">قرار قومي أو إجماع إعلامي</small>
+          </div>
 
-  <!-- Live KPI Strip -->
-  <section class="kpi-section">
-    <div class="container">
-      <div class="kpi-grid">
-        <div class="kpi-card">
-          <span class="kpi-label">المقالات المحللة (Gold)</span>
-          <strong class="kpi-num" id="kpi-articles">0</strong>
-        </div>
-        <div class="kpi-card">
-          <span class="kpi-label">التنبيهات عالية الأثر</span>
-          <strong class="kpi-num accent-amber" id="kpi-alerts">0</strong>
-        </div>
-        <div class="kpi-card">
-          <span class="kpi-label">الأحداث المستخرجة</span>
-          <strong class="kpi-num accent-teal" id="kpi-events">0</strong>
-        </div>
-        <div class="kpi-card">
-          <span class="kpi-label">المشكلات المرصودة</span>
-          <strong class="kpi-num accent-rose" id="kpi-issues">0</strong>
-        </div>
-        <div class="kpi-card">
-          <span class="kpi-label">قصص متعددة المصادر</span>
-          <strong class="kpi-num" id="kpi-clusters">0</strong>
-        </div>
-      </div>
-    </div>
-  </section>
+          <div class="bento-kpi">
+            <div class="kpi-top">
+              <strong id="kpi-events" class="accent-teal">0</strong>
+              <span class="info-pill" title="وقائع فعلية مستخرجة من الأخبار مع تحديد المحافظة والمرحلة التنفيذية">ⓘ</span>
+            </div>
+            <span class="kpi-title">حدث مستخرج</span>
+            <small class="kpi-desc">محدد بالمكان والمرحلة</small>
+          </div>
 
-  <!-- High Impact Alerts Radar -->
-  <section id="high-impact" class="content-section">
-    <div class="container">
-      <div class="section-head">
-        <div>
-          <span class="section-eyebrow">HIGH IMPACT RADAR</span>
-          <h2>الأخبار عالية الأثر على مصر</h2>
+          <div class="bento-kpi">
+            <div class="kpi-top">
+              <strong id="kpi-issues" class="accent-rose">0</strong>
+              <span class="info-pill" title="مشكلات خدمية أو اقتصادية أو أمنية مرصودة ومصنفة حسب الخطورة">ⓘ</span>
+            </div>
+            <span class="kpi-title">مشكلة مرصودة</span>
+            <small class="kpi-desc">مصنفة بالقطاع والخطورة</small>
+          </div>
         </div>
-        <div class="filter-bar">
-          <button class="fbtn active" data-filter="new">عالي الأثر الحقيقي (النظام الجديد)</button>
-          <button class="fbtn" data-filter="all">الكل</button>
-          <button class="fbtn" data-filter="pos">إيجابي محتمل</button>
-          <button class="fbtn" data-filter="neg">سلبي محتمل</button>
+
+        <!-- Accessible Governorate Selector (Dropdown for Mobile/Keyboard + Search + Pills) -->
+        <div class="gov-selector-card">
+          <div class="gov-selector-head">
+            <label for="gov-mobile-select">اختر المحافظة (27 محافظة):</label>
+            <div class="gov-inputs-row">
+              <select id="gov-mobile-select" class="gov-select" aria-label="قائمة محافظات مصر">
+                <option value="">-- اختر من القائمة --</option>
+              </select>
+              <input id="gov-search-input" type="search" placeholder="أو ابحث بالاسم..." class="gov-search-input" aria-label="ابحث عن محافظة بالاسم" />
+            </div>
+          </div>
+          <div id="gov-pills" class="gov-pills" role="listbox" aria-label="أزرار المحافظات"></div>
         </div>
       </div>
-      <div id="high-impact-grid" class="cards-grid">
-        <div class="loading-msg">جاري تحميل الأخبار عالية الأثر...</div>
+
+      <!-- Left Column: Dedicated 3D Egypt Map Stage -->
+      <div class="globe-stage">
+        <div id="globe-canvas-wrap" class="globe-canvas-wrap" aria-label="خريطة مصر التفاعلية">
+          <canvas id="globe-canvas"></canvas>
+          <div id="globe-labels" class="globe-labels"></div>
+        </div>
+        <div class="globe-stage-bar">
+          <span>اضغط على اسم المحافظة على الخريطة لعرض أخبارها • اضغط مفتاح Escape لإغلاق نافذة المحافظة</span>
+        </div>
+
+        <!-- Slide-Over Governorate Details Drawer -->
+        <aside id="gov-drawer" class="gov-drawer hidden" role="dialog" aria-labelledby="drawer-gov-name">
+          <div class="drawer-header">
+            <div>
+              <span class="drawer-eyebrow">رادار المحافظة</span>
+              <h2 id="drawer-gov-name">القاهرة</h2>
+            </div>
+            <button id="drawer-close" class="drawer-close" aria-label="إغلاق نافذة المحافظة (Escape)">✕</button>
+          </div>
+          <div class="drawer-stats">
+            <div class="mini-stat"><strong id="d-articles-cnt">0</strong><span>مقال</span></div>
+            <div class="mini-stat"><strong id="d-events-cnt">0</strong><span>حدث</span></div>
+            <div class="mini-stat"><strong id="d-issues-cnt">0</strong><span>مشكلة</span></div>
+          </div>
+          <div class="drawer-tabs" role="tablist">
+            <button class="dtab active" role="tab" aria-selected="true" data-tab="articles">الأخبار</button>
+            <button class="dtab" role="tab" aria-selected="false" data-tab="events">الأحداث</button>
+            <button class="dtab" role="tab" aria-selected="false" data-tab="issues">المشكلات</button>
+          </div>
+          <div id="drawer-body" class="drawer-body"></div>
+        </aside>
       </div>
     </div>
   </section>
 
-  <!-- 1. Issues & Sectors Radar -->
-  <section id="issues-radar" class="content-section alt-bg">
+  <!-- 3. Organized Tabbed Intelligence Workspace -->
+  <section id="workspace" class="workspace-section" aria-label="مساحة استعراض الأخبار والتحليلات">
     <div class="container">
-      <div class="section-head">
-        <div>
-          <span class="section-eyebrow">ISSUES & SECTORS RADAR</span>
-          <h2>رادار المشكلات والأزمات الخدمية</h2>
-        </div>
-        <div class="filter-bar" id="issues-filter-bar">
-          <button class="ibtn fbtn active" data-sev="">الكل</button>
-          <button class="ibtn fbtn" data-sev="حرج">حرج</button>
-          <button class="ibtn fbtn" data-sev="مرتفع">مرتفع</button>
-          <button class="ibtn fbtn" data-sev="متوسط">متوسط</button>
-        </div>
+      <div class="workspace-nav" role="tablist" aria-label="أقسام الرصد الإخباري">
+        <button class="wtab active" role="tab" aria-selected="true" data-target="tab-impact">
+          <span class="wtab-dot dot-amber" aria-hidden="true"></span>
+          1. الأخبار عالية الأثر
+        </button>
+        <button class="wtab" role="tab" aria-selected="false" data-target="tab-issues">
+          <span class="wtab-dot dot-rose" aria-hidden="true"></span>
+          2. رادار المشكلات
+        </button>
+        <button class="wtab" role="tab" aria-selected="false" data-target="tab-events">
+          <span class="wtab-dot dot-teal" aria-hidden="true"></span>
+          3. متابعة الأحداث
+        </button>
+        <button class="wtab" role="tab" aria-selected="false" data-target="tab-digest">
+          <span class="wtab-dot dot-emerald" aria-hidden="true"></span>
+          4. النشرة والترندات
+        </button>
+        <button class="wtab" role="tab" aria-selected="false" data-target="tab-clusters">
+          <span class="wtab-dot dot-sky" aria-hidden="true"></span>
+          5. القصص المشتركة (<span id="kpi-clusters">0</span>)
+        </button>
+        <button class="wtab" role="tab" aria-selected="false" data-target="tab-all-articles">
+          <span class="wtab-dot dot-teal" aria-hidden="true"></span>
+          6. أرشيف كل الأخبار
+        </button>
       </div>
-      <div id="issues-grid" class="cards-grid">
-        <div class="loading-msg">جاري تحميل المشكلات المرصودة...</div>
-      </div>
-    </div>
-  </section>
 
-  <!-- 2. Events Tracker by Stage -->
-  <section id="events-tracker" class="content-section">
-    <div class="container">
-      <div class="section-head">
-        <div>
-          <span class="section-eyebrow">LIVE EVENTS TRACKER</span>
-          <h2>متابعة الأحداث والمشاريع حسب المرحلة</h2>
+      <!-- TAB 1: High Impact Radar -->
+      <div id="tab-impact" class="wpanel active" role="tabpanel">
+        <div class="panel-toolbar">
+          <div>
+            <h3>تنبيهات الأخبار عالية الأثر على مصر</h3>
+            <p class="panel-sub">معيار الاختيار: قرار قومي مرتفع الأثر، أو خبر غطاه موقعان فأكثر، أو مشكلة خدمية/أمنية حرجة (مع جودة تحليل ≥ 70%).</p>
+          </div>
+          <div class="filter-bar" role="group" aria-label="فلترة الأخبار عالية الأثر">
+            <button class="fbtn active" data-filter="new">عالي الأثر الحقيقي</button>
+            <button class="fbtn" data-filter="pos">إيجابي محتمل</button>
+            <button class="fbtn" data-filter="neg">سلبي محتمل</button>
+            <button class="fbtn" data-filter="all">كل التنبيهات</button>
+          </div>
         </div>
-        <div class="filter-bar" id="events-filter-bar">
-          <button class="ebtn fbtn active" data-status="">كل المراحل</button>
-          <button class="ebtn fbtn" data-status="announced">أُعلن عنه (Announced)</button>
-          <button class="ebtn fbtn" data-status="preparation">جارٍ التجهيز (Preparation)</button>
-          <button class="ebtn fbtn" data-status="ongoing">قيد التنفيذ (Ongoing)</button>
-          <button class="ebtn fbtn" data-status="completed">مكتمل (Completed)</button>
-        </div>
+        <div id="high-impact-grid" class="cards-grid"></div>
+        <div id="impact-more-wrap" class="more-wrap"></div>
       </div>
-      <div id="events-grid" class="cards-grid">
-        <div class="loading-msg">جاري تحميل الأحداث...</div>
-      </div>
-    </div>
-  </section>
 
-  <!-- 3. Trending Entities -->
-  <section id="trending-entities" class="content-section alt-bg">
-    <div class="container">
-      <div class="section-head">
-        <div>
-          <span class="section-eyebrow">TRENDING ENTITIES</span>
-          <h2>أكثر الشخصيات والجهات والمشروعات تداولًا</h2>
+      <!-- TAB 2: Issues Radar -->
+      <div id="tab-issues" class="wpanel" role="tabpanel">
+        <div class="panel-toolbar">
+          <div>
+            <h3>رادار المشكلات والأزمات الخدمية</h3>
+            <p class="panel-sub">مشكلات حقيقية مرصودة في الأخبار: حرج (خطر على الأرواح/محافظة) • مرتفع (يمس شريحة واسعة) • متوسط (نطاق محلي/حي).</p>
+          </div>
+          <div class="filter-bar" role="group" aria-label="فلترة المشكلات حسب الخطورة">
+            <button class="ibtn fbtn active" data-sev="">الكل</button>
+            <button class="ibtn fbtn" data-sev="حرج">حرج</button>
+            <button class="ibtn fbtn" data-sev="مرتفع">مرتفع</button>
+            <button class="ibtn fbtn" data-sev="متوسط">متوسط</button>
+          </div>
         </div>
-        <div class="filter-bar" id="entities-filter-bar">
-          <button class="entbtn fbtn active" data-etype="">الكل</button>
-          <button class="entbtn fbtn" data-etype="شخص">شخصيات</button>
-          <button class="entbtn fbtn" data-etype="مؤسسة">مؤسسات وجهات</button>
-          <button class="entbtn fbtn" data-etype="مشروع">مشروعات</button>
-          <button class="entbtn fbtn" data-etype="دولة">دول</button>
-        </div>
+        <div id="issues-grid" class="cards-grid"></div>
+        <div id="issues-more-wrap" class="more-wrap"></div>
       </div>
-      <div id="entities-cloud" class="entities-cloud">
-        <div class="loading-msg">جاري تحميل الكيانات الأكثر تداولًا...</div>
-      </div>
-      <div id="entity-articles-box" class="entity-articles-box hidden">
-        <div class="entity-box-head">
-          <h3 id="entity-box-title">الأخبار المرتبطة</h3>
-          <button id="entity-box-close" class="drawer-close">✕</button>
-        </div>
-        <div id="entity-articles-list" class="cards-grid"></div>
-      </div>
-    </div>
-  </section>
 
-  <!-- 4. Daily Digest Snapshot -->
-  <section id="daily-digest" class="content-section">
-    <div class="container">
-      <div class="section-head">
-        <div>
-          <span class="section-eyebrow">DAILY EXECUTIVE DIGEST</span>
-          <h2>النشرة اليومية المختصرة (آخر 24 ساعة)</h2>
+      <!-- TAB 3: Events Tracker -->
+      <div id="tab-events" class="wpanel" role="tabpanel">
+        <div class="panel-toolbar">
+          <div>
+            <h3>متابعة الأحداث والمشاريع حسب المرحلة</h3>
+            <p class="panel-sub">تتبع المرحلة التنفيذية لكل واقعة من الإعلان الرسمي وحتى الاكتمال.</p>
+          </div>
+          <div class="filter-bar" role="group" aria-label="فلترة الأحداث حسب المرحلة">
+            <button class="ebtn fbtn active" data-status="">كل المراحل</button>
+            <button class="ebtn fbtn" data-status="announced">أُعلن عنه</button>
+            <button class="ebtn fbtn" data-status="preparation">جارٍ التجهيز</button>
+            <button class="ebtn fbtn" data-status="ongoing">قيد التنفيذ</button>
+            <button class="ebtn fbtn" data-status="completed">مكتمل</button>
+          </div>
         </div>
-        <div id="digest-meta" class="digest-meta"></div>
+        <div id="events-grid" class="cards-grid"></div>
+        <div id="events-more-wrap" class="more-wrap"></div>
       </div>
-      <div id="digest-categories" class="digest-cats"></div>
-      <div class="digest-cols">
-        <div class="digest-col">
-          <h3 class="digest-col-title accent-teal">أهم الأخبار الإيجابية لمصر</h3>
-          <div id="digest-pos-list" class="digest-list"></div>
-        </div>
-        <div class="digest-col">
-          <h3 class="digest-col-title accent-rose">أهم الأخبار السلبية / التحديات</h3>
-          <div id="digest-neg-list" class="digest-list"></div>
-        </div>
-      </div>
-    </div>
-  </section>
 
-  <!-- Multi-Source Story Clusters -->
-  <section id="clusters" class="content-section alt-bg">
-    <div class="container">
-      <div class="section-head">
-        <div>
-          <span class="section-eyebrow">CROSS-SOURCE CLUSTERING</span>
-          <h2>القصص المشتركة عبر المواقع المصرية</h2>
+      <!-- TAB 4: Daily Digest + Trending Entities -->
+      <div id="tab-digest" class="wpanel" role="tabpanel">
+        <div class="panel-toolbar">
+          <div>
+            <h3>النشرة اليومية المختصرة وترند الكيانات</h3>
+            <p id="digest-meta" class="panel-sub">ملخص آخر 24 ساعة</p>
+          </div>
+          <div class="filter-bar" role="group" aria-label="فلترة الكيانات حسب النوع">
+            <button class="entbtn fbtn active" data-etype="">كل الكيانات</button>
+            <button class="entbtn fbtn" data-etype="شخص">شخصيات</button>
+            <button class="entbtn fbtn" data-etype="مؤسسة">مؤسسات</button>
+            <button class="entbtn fbtn" data-etype="مشروع">مشروعات</button>
+            <button class="entbtn fbtn" data-etype="دولة">دول</button>
+          </div>
+        </div>
+
+        <div class="bento-box" style="margin-bottom: 22px;">
+          <h4 class="bento-box-title">أكثر الشخصيات والجهات تداولًا (اضغط على أي اسم لعرض أخباره):</h4>
+          <div id="entities-cloud" class="entities-cloud"></div>
+          <div id="entity-articles-box" class="entity-articles-box hidden">
+            <div class="entity-box-head">
+              <h3 id="entity-box-title">الأخبار المرتبطة</h3>
+              <button id="entity-box-close" class="drawer-close" aria-label="إغلاق أخبار الكيان">✕</button>
+            </div>
+            <div id="entity-articles-list" class="cards-grid"></div>
+          </div>
+        </div>
+
+        <div id="digest-categories" class="digest-cats"></div>
+
+        <div class="digest-cols">
+          <div class="digest-col">
+            <h4 class="digest-col-title accent-teal">أهم الأخبار الإيجابية لمصر</h4>
+            <div id="digest-pos-list" class="digest-list"></div>
+          </div>
+          <div class="digest-col">
+            <h4 class="digest-col-title accent-rose">أهم الأخبار السلبية / التحديات</h4>
+            <div id="digest-neg-list" class="digest-list"></div>
+          </div>
         </div>
       </div>
-      <div id="clusters-grid" class="clusters-grid">
-        <div class="loading-msg">جاري تحميل القصص المجمعة...</div>
+
+      <!-- TAB 5: Multi-Source Story Clusters -->
+      <div id="tab-clusters" class="wpanel" role="tabpanel">
+        <div class="panel-toolbar">
+          <div>
+            <h3>القصص المشتركة عبر المواقع المصرية</h3>
+            <p class="panel-sub">الأحداث التي غطتها أكثر من مؤسسة إعلامية في نفس الوقت (مؤشر موضوعي على أهمية الخبر).</p>
+          </div>
+        </div>
+        <div id="clusters-grid" class="clusters-grid"></div>
+        <div id="clusters-more-wrap" class="more-wrap"></div>
+      </div>
+
+      <!-- TAB 6: All Analyzed Articles -->
+      <div id="tab-all-articles" class="wpanel" role="tabpanel">
+        <div class="panel-toolbar">
+          <div>
+            <h3>أرشيف كل الأخبار المحللة (<span id="all-articles-total">0</span> مقال)</h3>
+            <p class="panel-sub">تصفح وابحث في جميع المقالات المسحوبة والمحللة بدون أي حد أقصى.</p>
+          </div>
+          <div class="filter-bar">
+            <input id="all-articles-search" type="search" placeholder="ابحث في العناوين والملخصات..." class="gov-search-input" style="width: 240px;" aria-label="بحث في كل الأخبار" />
+            <button class="abtn fbtn active" data-acat="">كل الأقسام</button>
+            <button class="abtn fbtn" data-acat="سياسة">سياسة</button>
+            <button class="abtn fbtn" data-acat="اقتصاد">اقتصاد</button>
+            <button class="abtn fbtn" data-acat="حوادث">حوادث</button>
+            <button class="abtn fbtn" data-acat="رياضة">رياضة</button>
+            <button class="abtn fbtn" data-acat="صحة">صحة</button>
+            <button class="abtn fbtn" data-acat="مجتمع">مجتمع</button>
+          </div>
+        </div>
+        <div id="all-articles-grid" class="cards-grid"></div>
+        <div id="all-articles-more-wrap" class="more-wrap"></div>
       </div>
     </div>
   </section>
@@ -262,9 +320,80 @@
   <footer class="footer">
     <div class="container footer-inner">
       <span>منصة رصد وتحليل الأخبار المصرية — متصل مباشرة بـ PostgreSQL (egypt_news_gold)</span>
-      <span>Three.js + GSAP + FastAPI</span>
+      <span>المصادر: اليوم السابع • المصري اليوم • القاهرة 24 • مصراوي • الشروق</span>
     </div>
   </footer>
+
+  <!-- 4. Floating Assistant Launcher & Chat Drawer -->
+  <button id="rag-fab" class="rag-fab" aria-label="فتح المساعد الذكي لأخبار مصر">
+    <span class="rag-fab-icon">✦</span>
+    <span>اسأل رادار مصر</span>
+  </button>
+
+  <aside id="rag-chat-panel" class="rag-chat-panel hidden" role="dialog" aria-labelledby="rag-panel-title">
+    <div class="rag-header">
+      <div>
+        <div class="rag-status-row">
+          <span class="pulse-dot"></span>
+          <span class="rag-eyebrow">EGYPT NEWS AI ASSISTANT</span>
+        </div>
+        <h2 id="rag-panel-title">المساعد الذكي لأخبار مصر</h2>
+      </div>
+      <div class="rag-header-actions">
+        <button id="rag-clear-btn" class="btn-outline rag-sm-btn" title="مسح المحادثة">مسح</button>
+        <button id="rag-close-btn" class="drawer-close" aria-label="إغلاق المحادثة">✕</button>
+      </div>
+    </div>
+
+    <!-- Optional Context Filters inside Chat -->
+    <div class="rag-filters-bar">
+      <select id="rag-gov-filter" class="gov-select" aria-label="تحديد محافظة للسؤال">
+        <option value="">📍 كل محافظات مصر</option>
+      </select>
+      <select id="rag-cat-filter" class="gov-select" aria-label="تحديد قسم للسؤال">
+        <option value="">🗂️ كل الأقسام</option>
+        <option value="سياسة">سياسة</option>
+        <option value="اقتصاد">اقتصاد</option>
+        <option value="صحة">صحة</option>
+        <option value="حوادث">حوادث</option>
+        <option value="رياضة">رياضة</option>
+        <option value="تعليم">تعليم</option>
+        <option value="مجتمع">مجتمع</option>
+        <option value="تكنولوجيا">تكنولوجيا</option>
+      </select>
+    </div>
+
+    <!-- Quick Suggested Prompts -->
+    <div class="rag-suggestions" id="rag-suggestions">
+      <button class="rag-chip" data-q="ما أهم الأخبار عالية الأثر على مصر اليوم؟">🔥 أهم الأخبار عالية الأثر</button>
+      <button class="rag-chip" data-q="ما أبرز المشكلات الخدمية والأزمات المرصودة؟">⚠️ أبرز المشكلات المرصودة</button>
+      <button class="rag-chip" data-q="ما آخر أخبار وقرارات الاقتصاد والبنوك؟">📈 أخبار الاقتصاد والبنوك</button>
+      <button class="rag-chip" data-q="ما أهم الأحداث والمشاريع الجارية في القاهرة؟">🏗️ أحداث ومشاريع القاهرة</button>
+    </div>
+
+    <!-- Chat Messages Timeline -->
+    <div id="rag-messages" class="rag-messages" aria-live="polite">
+      <div class="rag-msg rag-msg-bot">
+        <div class="rag-bubble">
+          أهلًا بك في <strong>المساعد الذكي لرادار أخبار مصر</strong>! 🇪🇬<br />
+          اسألني عن أي خبر، محافظة، قطاع، أو مشكلة خدمية، وسأجيبك مباشرة من الأخبار المحللة مع روابط المصادر المعتمدة.
+        </div>
+      </div>
+    </div>
+
+    <!-- Chat Input Form -->
+    <form id="rag-form" class="rag-input-bar">
+      <input
+        id="rag-input"
+        type="text"
+        placeholder="اكتب سؤالك هنا (مثال: ما آخر أخبار الصحة في المنوفية؟)..."
+        autocomplete="off"
+        aria-label="اكتب سؤالك للمساعد الذكي"
+        required
+      />
+      <button type="submit" id="rag-send-btn" class="btn-primary rag-send-btn">إرسال ➤</button>
+    </form>
+  </aside>
 
   <script src="/static/app.js"></script>
 </body>
