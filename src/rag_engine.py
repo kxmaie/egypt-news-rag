@@ -39,14 +39,15 @@ logger = logging.getLogger("egypt_news_rag_engine")
 DEFAULT_EMBED_MODEL = os.environ.get("RAG_EMBED_MODEL", "paraphrase-multilingual")
 
 RAG_SYSTEM_PROMPT = """أنت المساعد الذكي الرسمي لمنصة "رادار أخبار مصر".
-مهمتك الإجابة على سؤال المستخدم باللغة العربية الفصحى الواضحة بالاعتماد الحصري على الأخبار المرفقة داخل <context>...</context>.
+مهمتك الإجابة على استفسارات المستخدم باللغة العربية الفصحى الواضحة والمباشرة استنادًا إلى الأخبار المتوفرة في <context>...</context>.
 
-قواعد صارمة:
-1. اعتمد فقط على الحقائق والأرقام والتصريحات المذكورة في <context>، ولا تخترع أي معلومات من خارجها.
-2. نظّم الإجابة في نقاط واضحة وموجزة، وضع رقم الخبر المستشهد به بين قوسين مثل [1] أو [2] في نهاية كل معلومة، مع ذكر اسم الصحيفة والمحافظة.
-3. لا تستخدم أرقام مراجع غير موجودة في <context>.
-4. إذا لم تجد في <context> ما يجيب على السؤال، قل بوضوح: "لا تتوفر في الأخبار المرصودة حاليًا تفاصيل كافية حول هذا السؤال."
-5. يُمنع تمامًا استخدام أي حروف صينية أو أجنبية."""
+قواعد صارمة للإجابة والتنسيق:
+1. اعتمد فقط على المعلومات والوقائع والتصريحات الواردة في <context>، ولا تخترع أي معلومات من خارجها.
+2. نظّم الإجابة في نقاط واضحة ومتباعدة؛ اجعل كل خبر في سطر مستقل يبدأ بنقطة [رقم المرجع] واسم الصحيفة ثم ملخص الوقائع.
+3. تجنب تمامًا المقدمات الإنشائية والعبارات المكررة مثل "الخبر الأول يتحدث عن" أو "خبر رقم 1". ادخل في صلب الخبر مباشرة.
+4. إذا كان السؤال مقارنة بين محافظتين أو صحيفتين، اعرض ما يخص كل جهة بنقاط مستقلة ثم وضّح أوجه الاتفاق أو الاختلاف.
+5. إذا لم تجد تفاصيل كافية حول السؤال، قل بوضوح: "لا تتوفر في الأخبار المرصودة حاليًا تفاصيل كافية حول هذا السؤال."
+6. يُمنع منعًا باتًا استخدام أي حروف صينية أو أجنبية."""
 
 
 def get_ollama_base_host() -> str:
@@ -431,6 +432,94 @@ def _extract_target_date_from_question(norm_q: str) -> str | None:
     return None
 
 
+_KNOWN_SOURCES = ("اليوم السابع", "المصري اليوم", "القاهرة 24", "الشروق", "الوطن", "مصراوي")
+
+_TOPIC_KEYWORDS = {
+    "مستشفيات": ("مستشف", "مستشفيات", "رعايه صحيه", "تأمين صحي", "تامين صحي"),
+    "امتحانات": ("امتحان", "امتحانات", "مناهج", "ثانويه عامه"),
+    "تعليم": ("تعليم", "مدارس", "جامعه", "جامعات", "طلاب"),
+    "صرف صحي": ("صرف صحي", "مياه شرب", "انقطاع مياه", "صرف"),
+    "طرق ومواصلات": ("طرق", "كباري", "محاور", "ازدحام", "مرور"),
+    "سكك حديدية": ("قطار", "قطارات", "سكه حديد", "سكك حديديه", "مترو"),
+    "أسعار": ("اسعار", "سعر", "غلاء", "سلع", "تموين"),
+    "مصانع": ("مصنع", "مصانع", "منطقه صناعيه", "مدن صناعيه", "انتاج محلي"),
+    "فنادق": ("فندق", "فنادق", "منتجع", "اشغال فندقي", "سياحه"),
+    "سيول": ("سيل", "سيول", "امطار", "طقس"),
+    "تأمينات": ("تامين", "تأمينات", "معاش", "معاشات", "تضامن"),
+    "غاز": ("غاز", "بوتاجاز", "غاز طبيعي"),
+    "كهرباء": ("كهرباء", "طاقه", "انقطاع كهرباء"),
+    "ذهب": ("ذهب", "سبيكه", "عيار 21", "عيار 18"),
+    "محاصيل": ("محصول", "محاصيل", "قمح", "ارز", "زراعه"),
+    "رياضة": ("رياضه", "دوري", "اهلي", "زمالك", "كره"),
+    "إسكان": ("اسكان", "شقق", "سكن", "عقارات"),
+    "تكنولوجيا": ("تكنولوجيا", "اتصالات", "انترنت", "ذكاء اصطناعي"),
+    "أدوية": ("دواء", "ادويه", "صيدليات", "علاج"),
+}
+
+
+def _detect_all_governorates_from_text(norm_q: str) -> list[str]:
+    """Detect all Egyptian governorates mentioned in query (preserving order)."""
+    found: list[str] = []
+    for g_name in EGYPT_GOVERNORATES:
+        norm_g = _normalize_arabic_for_match(g_name)
+        if norm_g in norm_q and g_name not in found:
+            found.append(g_name)
+    return found
+
+
+def _detect_source_from_text(norm_q: str) -> str | None:
+    for src in _KNOWN_SOURCES:
+        if _normalize_arabic_for_match(src) in norm_q:
+            return src
+    return None
+
+
+def _detect_topic_stem(norm_q: str) -> tuple[str | None, str | None]:
+    """Returns (canonical_topic, search_pattern)."""
+    for topic_label, stems in _TOPIC_KEYWORDS.items():
+        for stem in stems:
+            if stem in norm_q:
+                return topic_label, stem
+    return None, None
+
+
+def _extract_timeframe_days_and_date(norm_q: str) -> tuple[int | None, str | None]:
+    """Parse relative time windows (اليوم, منذ أمس, آخر يومين, آخر 3 أيام, هذا الأسبوع, الأسبوع الماضي, هذا الشهر, آخر 30 يوماً)."""
+    today = datetime.now(CAIRO_TZ).date()
+
+    if any(p in norm_q for p in ("اول امبارح", "اول انبارح", "اول امس", "قبل امبارح", "قبل انبارح")):
+        return 2, (today - timedelta(days=2)).isoformat()
+
+    if any(w in norm_q.split() for w in ("امس", "امبارح", "انبارح", "البارحه")) or "منذ امس" in norm_q:
+        return 2, (today - timedelta(days=1)).isoformat()
+
+    if any(p in norm_q for p in ("اليوم", "النهارده", "خلال اليوم", "اخر 24 ساعه", "خلال 24 ساعه")):
+        return 1, today.isoformat()
+
+    if any(p in norm_q for p in ("اخر يومين", "خلال يومين", "يومين")):
+        return 2, None
+
+    if any(p in norm_q for p in ("اخر 3 ايام", "خلال 3 ايام", "اخر ثلاثه ايام", "خلال ثلاثه ايام", "اخر 3 يوما")):
+        return 3, None
+
+    if any(p in norm_q for p in ("هذا الاسبوع", "خلال هذا الاسبوع", "اخر اسبوع", "خلال الاسبوع", "الاسبوع الحالي", "اخر 7 ايام")):
+        return 7, None
+
+    if any(p in norm_q for p in ("الاسبوع الماضي", "خلال الاسبوع الماضي", "الاسبوع السابق")):
+        return 14, None
+
+    if any(p in norm_q for p in ("هذا الشهر", "خلال هذا الشهر", "اخر شهر", "اخر 30 يوم", "اخر 30 يوما", "خلال 30 يوم")):
+        return 30, None
+
+    target_date = _extract_target_date_from_question(norm_q)
+    return None, target_date
+
+
+def _is_comparison_count_question(norm_q: str, govs: list[str]) -> bool:
+    """True when user asks which governorate has more news (e.g. 'أي محافظة لديها أخبار أكثر: القاهرة أم البحيرة؟')."""
+    return len(govs) >= 2 and any(p in norm_q for p in ("اكثر", "اكبر", "لديها اخبار اكثر", "فيها اخبار اكثر", "اي محافظه"))
+
+
 def _extract_requested_item_count(norm_q: str, default_k: int = 5) -> int:
     """Detect if the user asked for a specific number of news items (e.g. 'أهم خبرين' -> 2, 'أهم 4 أخبار' -> 4)."""
     if any(w in norm_q for w in ("خبرين", "الخبرين", "مقالين", "حدثين", "اثنين")):
@@ -456,15 +545,15 @@ def _extract_requested_item_count(norm_q: str, default_k: int = 5) -> int:
     return default_k
 
 _CATEGORY_SYNONYMS: dict[str, tuple[str, ...]] = {
-    "سياسة": ("سياسه", "سياسي", "سياسيه", "السياسه", "السياسيه", "السياسي", "دبلوماس", "برلمان", "رئاس"),
-    "اقتصاد": ("اقتصاد", "اقتصادي", "اقتصاديه", "الاقتصاد", "الاقتصاديه", "الاقتصادي", "بورصه", "بنوك", "استثمار", "اسعار", "ذهب", "دولار"),
+    "سياسة": ("سياسه", "سياسي", "سياسيه", "السياسه", "السياسيه", "السياسي", "دبلوماس", "برلمان", "رئاس", "حكوم"),
+    "اقتصاد": ("اقتصاد", "اقتصادي", "اقتصاديه", "الاقتصاد", "الاقتصاديه", "الاقتصادي", "بورصه", "بنوك", "استثمار", "اسعار", "ذهب", "دولار", "مصانع"),
     "صحة": ("صحه", "صحي", "صحيه", "الصحه", "الصحيه", "مستشفي", "اطباء", "علاج", "ادويه"),
     "حوادث": ("حوادث", "حادث", "امني", "امنيه", "الامنيه", "شرطه", "داخليه", "مباحث", "قضائ", "محكمه", "نيابه"),
     "رياضة": ("رياضه", "رياضي", "رياضيه", "الرياضه", "الرياضيه", "كره", "اهلي", "زمالك", "منتخب", "دوري"),
     "تعليم": ("تعليم", "تعليمي", "تعليميه", "التعليم", "التعليميه", "جامعه", "مدارس", "طلاب", "امتحانات"),
-    "مجتمع": ("مجتمع", "مجتمعي", "اجتماعي", "اجتماعيه", "المجتمع", "تضامن", "معاشات", "مواطنين"),
+    "مجتمع": ("مجتمع", "مجتمعي", "اجتماعي", "اجتماعيه", "المجتمع", "تضامن", "معاشات", "مواطنين", "تامينات"),
     "تكنولوجيا": ("تكنولوجيا", "تكنولوجي", "رقمي", "رقميه", "ذكاء اصطناعي", "انترنت", "اتصالات"),
-    "فن": ("فن", "فني", "فنيه", "الفن", "الفنيه", "سينما", "مسرح", "مسلسل", "فنان"),
+    "فن": ("فن", "فني", "فنيه", "الفن", "الفنيه", "سينما", "مسرح", "مسلسل", "فنان", "فنادق"),
 }
 
 
@@ -573,6 +662,99 @@ def _build_deterministic_stats_answer_html(
     return "<br/>".join(lines)
 
 
+def _build_governorate_comparison_stats(
+    gov_a: str,
+    gov_b: str,
+    topic_label: str | None = None,
+    topic_stem: str | None = None,
+) -> tuple[str, list[dict[str, Any]], list[int]]:
+    """Deterministic comparison of news counts between two governorates directly from PostgreSQL."""
+    like_pat = f"%{topic_stem}%" if topic_stem else None
+    with psycopg2.connect(**get_db_config(), cursor_factory=RealDictCursor, connect_timeout=10) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    ac.governorate,
+                    COUNT(DISTINCT ac.article_id) AS cnt
+                FROM article_chunks ac
+                WHERE ac.governorate IN (%s, %s)
+                  AND (%s IS NULL OR ac.chunk_text ILIKE %s)
+                GROUP BY ac.governorate;
+                """,
+                (gov_a, gov_b, like_pat, like_pat),
+            )
+            count_map = {r["governorate"]: int(r["cnt"]) for r in cur.fetchall()}
+
+            # Fetch top 2 articles for each governorate
+            examples: list[dict[str, Any]] = []
+            for g in (gov_a, gov_b):
+                cur.execute(
+                    """
+                    SELECT DISTINCT ON (aa.id)
+                        aa.id AS article_id,
+                        aa.title,
+                        aa.summary_generated,
+                        aa.source_name,
+                        aa.category,
+                        aa.published_at,
+                        aa.canonical_url,
+                        ac.governorate,
+                        ac.chunk_text
+                    FROM article_chunks ac
+                    JOIN analyzed_articles aa ON aa.id = ac.article_id
+                    WHERE ac.governorate = %s
+                      AND (%s IS NULL OR ac.chunk_text ILIKE %s)
+                    ORDER BY aa.id, aa.published_at DESC NULLS LAST
+                    LIMIT 2;
+                    """,
+                    (g, like_pat, like_pat),
+                )
+                examples.extend([dict(r) for r in cur.fetchall()])
+
+    cnt_a = count_map.get(gov_a, 0)
+    cnt_b = count_map.get(gov_b, 0)
+    topic_desc = f" عن {topic_label}" if topic_label else ""
+
+    if cnt_a > cnt_b:
+        verdict = f"➡️ محافظة <strong>{gov_a}</strong> سجلت تغطية إخبارية أكبر ({cnt_a} مقابل {cnt_b})."
+    elif cnt_b > cnt_a:
+        verdict = f"➡️ محافظة <strong>{gov_b}</strong> سجلت تغطية إخبارية أكبر ({cnt_b} مقابل {cnt_a})."
+    else:
+        verdict = f"➡️ تساوت المحافظتان في عدد الأخبار المرصودة ({cnt_a} خبر لكل منهما)."
+
+    lines = [
+        f"📊 <strong>مقارنة التغطية الإخبارية{topic_desc}:</strong>",
+        f"• <strong>محافظة {gov_a}:</strong> {cnt_a} خبرًا.",
+        f"• <strong>محافظة {gov_b}:</strong> {cnt_b} خبرًا.",
+        verdict,
+    ]
+
+    if examples:
+        lines.append("<br/><strong>أبرز الأخبار المرصودة:</strong>")
+        for idx, ex in enumerate(examples, start=1):
+            lines.append(f"• <strong>[{idx}] {ex['source_name']} ({ex['governorate']}):</strong> {ex['title']}")
+
+    cited_indices = list(range(1, len(examples) + 1))
+    sources = [
+        {
+            "ref_index": idx,
+            "cited_in_answer": True,
+            "article_id": ex["article_id"],
+            "title": ex["title"],
+            "source_name": ex["source_name"],
+            "category": ex["category"],
+            "governorate": ex["governorate"],
+            "published_at": str(ex.get("published_at") or "")[:16],
+            "supporting_quote": (ex.get("summary_generated") or ex["title"])[:200],
+            "canonical_url": ex["canonical_url"],
+            "score": 1.0,
+        }
+        for idx, ex in enumerate(examples, start=1)
+    ]
+    return "<br/>".join(lines), sources, cited_indices
+
+
 def _extract_query_tokens(question: str) -> set[str]:
     raw_tokens = _tokenize_for_grounding(question)
     filtered = {t for t in raw_tokens if t not in _QUESTION_STOPWORDS and not t.isdigit()}
@@ -593,23 +775,24 @@ def hybrid_retrieve(
     candidate_limit: int = CANDIDATE_POOL_LIMIT,
 ) -> list[dict[str, Any]]:
     """Retrieve top_k relevant articles using 70% Dense Vector Similarity + 30% Arabic Lexical & Metadata Boosts."""
-    detected_gov = governorate
     norm_q = _normalize_arabic_for_match(question)
-    if not detected_gov:
-        for g_name in EGYPT_GOVERNORATES:
-            if _normalize_arabic_for_match(g_name) in norm_q:
-                detected_gov = g_name
-                break
-
+    detected_govs = _detect_all_governorates_from_text(norm_q)
+    detected_gov = governorate or (detected_govs[0] if detected_govs else None)
     detected_cat = category or _detect_category_from_text(norm_q)
-    target_date = _extract_target_date_from_question(norm_q)
+    detected_source = _detect_source_from_text(norm_q)
+    topic_label, topic_stem = _detect_topic_stem(norm_q)
+
+    tf_days, tf_date = _extract_timeframe_days_and_date(norm_q)
+    eff_days = days if (days and int(days) > 0) else tf_days
+    target_date = _extract_target_date_from_question(norm_q) or tf_date
+
     q_tokens = _extract_query_tokens(question)
-    # Exclude category words from q_tokens if category was already detected so broad category queries rank by impact/recency
+    # Exclude category and topic words from q_tokens if detected so broad category queries rank cleanly
     if detected_cat:
         cat_variants = set(_CATEGORY_SYNONYMS.get(detected_cat, ()))
         q_tokens = {t for t in q_tokens if t not in cat_variants}
 
-    is_general_top = _is_general_top_news_question(q_tokens, detected_gov, detected_cat)
+    is_general_top = _is_general_top_news_question(q_tokens, detected_gov, detected_cat) and not topic_stem
 
     # Fast path for broad "ما أهم الأخبار الواردة اليوم/امبارح/الخميس؟" queries: return top high-impact Egyptian national alerts directly
     if is_general_top:
@@ -674,31 +857,38 @@ def hybrid_retrieve(
 
     clauses: list[str] = ["1=1"]
     params: list[Any] = []
-    if governorate:
+    if detected_gov:
         clauses.append("ac.governorate = %s")
-        params.append(governorate)
-    if category or (detected_cat and not q_tokens):
-        # When user asks specifically about a category (e.g. "ما عدد الأخبار السياسية" or "أهم الأخبار الاقتصادية"), filter directly by that category
+        params.append(detected_gov)
+    if detected_source:
+        clauses.append("ac.source_name ILIKE %s")
+        params.append(f"%{detected_source}%")
+    if category or (detected_cat and not q_tokens and not topic_stem):
         clauses.append("ac.category = %s")
         params.append(category or detected_cat)
     if target_date:
         clauses.append("(ac.published_at AT TIME ZONE 'Africa/Cairo')::date = %s::date")
         params.append(target_date)
-    elif days and int(days) > 0:
+    elif eff_days and int(eff_days) > 0:
         clauses.append("COALESCE(ac.published_at, ac.updated_at) >= NOW() - (%s * INTERVAL '1 day')")
-        params.append(int(days))
+        params.append(int(eff_days))
     where_sql = f"WHERE {' AND '.join(clauses)}"
 
     # SQL pre-ranking so bounded candidate pool always retains lexically/geographically matching chunks
     ts_query_terms = " | ".join(sorted(q_tokens)) if q_tokens else ""
     order_params: list[Any] = []
     order_exprs: list[str] = []
+    if topic_stem:
+        order_exprs.append("(CASE WHEN ac.chunk_text ILIKE %s OR aa.title ILIKE %s THEN 1 ELSE 0 END) DESC")
+        order_params.extend([f"%{topic_stem}%", f"%{topic_stem}%"])
     if detected_gov:
         order_exprs.append("(CASE WHEN ac.governorate = %s THEN 1 ELSE 0 END) DESC")
         order_params.append(detected_gov)
     if detected_cat:
         order_exprs.append("(CASE WHEN ac.category = %s THEN 1 ELSE 0 END) DESC")
         order_params.append(detected_cat)
+    if any(k in norm_q for k in ("مشكل", "ازم", "خطور", "نقص", "تلوث", "انقطاع")):
+        order_exprs.append("(CASE WHEN ac.chunk_type = 'event_and_issues' THEN 1 ELSE 0 END) DESC")
     if ts_query_terms:
         order_exprs.append("ts_rank_cd(to_tsvector('simple', ac.chunk_text), to_tsquery('simple', %s)) DESC")
         order_params.append(ts_query_terms)
@@ -744,11 +934,12 @@ def hybrid_retrieve(
         title_boost = 0.22 * (len(q_tokens & t_tokens) / max(1, len(q_tokens))) if q_tokens else 0.0
         gov_boost = 0.25 if (detected_gov and r.get("governorate") == detected_gov) else 0.0
         cat_boost = 0.18 if (detected_cat and r.get("category") == detected_cat) else 0.0
+        topic_boost = 0.35 if (topic_stem and (topic_stem in r["chunk_text"] or topic_stem in r["title"])) else 0.0
 
         if has_vec:
-            total_score = VECTOR_WEIGHT * max(0.0, vec_score) + LEXICAL_WEIGHT * lex_score + title_boost + gov_boost + cat_boost
+            total_score = VECTOR_WEIGHT * max(0.0, vec_score) + LEXICAL_WEIGHT * lex_score + title_boost + gov_boost + cat_boost + topic_boost
         else:
-            total_score = lex_score + title_boost + gov_boost + cat_boost
+            total_score = lex_score + title_boost + gov_boost + cat_boost + topic_boost
         aid = int(r["article_id"])
 
         if aid not in scored_by_article:
@@ -826,23 +1017,40 @@ def answer_question_with_rag(
 ) -> dict[str, Any]:
     """Run full Hybrid RAG: retrieve top chunks and generate a grounded Arabic answer via Qwen."""
     norm_q = _normalize_arabic_for_match(question)
-    detected_gov = governorate
-    if not detected_gov:
-        for g_name in EGYPT_GOVERNORATES:
-            if _normalize_arabic_for_match(g_name) in norm_q:
-                detected_gov = g_name
-                break
+    detected_govs = _detect_all_governorates_from_text(norm_q)
+    detected_gov = governorate or (detected_govs[0] if detected_govs else None)
     detected_cat = category or _detect_category_from_text(norm_q)
+    topic_label, topic_stem = _detect_topic_stem(norm_q)
     is_stats_q = _is_count_or_stats_question(norm_q)
     effective_k = _extract_requested_item_count(norm_q, default_k=top_k) if not is_stats_q else top_k
 
-    retrieved = hybrid_retrieve(
-        question=question,
-        governorate=governorate,
-        category=category,
-        days=days,
-        top_k=effective_k,
-    )
+    # 1. Comparison count question between two governorates (e.g. 'أي محافظة لديها أخبار أكثر: القاهرة أم البحيرة؟')
+    if _is_comparison_count_question(norm_q, detected_govs):
+        comp_html, comp_sources, comp_cited = _build_governorate_comparison_stats(
+            detected_govs[0], detected_govs[1], topic_label, topic_stem
+        )
+        return {
+            "answer": comp_html,
+            "sources": comp_sources,
+            "cited_indices": comp_cited,
+            "chunks_used": len(comp_sources),
+        }
+
+    # 2. Comparative narrative between two governorates (e.g. 'قارن ما نُشر عن المستشفيات في القاهرة والبحيرة')
+    is_comparative = "قارن" in norm_q and len(detected_govs) >= 2
+    if is_comparative:
+        ret_a = hybrid_retrieve(question=question, governorate=detected_govs[0], top_k=2)
+        ret_b = hybrid_retrieve(question=question, governorate=detected_govs[1], top_k=2)
+        retrieved = ret_a + ret_b
+    else:
+        retrieved = hybrid_retrieve(
+            question=question,
+            governorate=governorate,
+            category=category,
+            days=days,
+            top_k=effective_k,
+        )
+
     if not retrieved and not is_stats_q:
         target_date = _extract_target_date_from_question(norm_q)
         date_msg = f" بتاريخ <strong>{target_date}</strong>" if target_date else ""
@@ -889,14 +1097,23 @@ def answer_question_with_rag(
     context_blocks = []
     for idx, item in enumerate(retrieved, start=1):
         merged_chunks = "\n".join(item["chunks"])
-        context_blocks.append(f"--- خبر [{idx}] ---\n{merged_chunks}")
+        header = f"--- خبر [{idx}] | {item.get('source_name', '')} | {item.get('governorate') or ''} ---"
+        context_blocks.append(f"{header}\n{merged_chunks}")
     context_str = "\n\n".join(context_blocks)
 
-    user_prompt = (
-        f"<context>\n{context_str}\n</context>\n\n"
-        f"سؤال المستخدم: {question}\n"
-        f"أجب باللغة العربية الفصحى في نقاط واضحة بالاعتماد على البيانات والأخبار أعلاه فقط، مع وضع رقم المرجع [1] أو [2] أمام كل خبر مستشهد به:"
-    )
+    if is_comparative:
+        task_instruction = (
+            f"سؤال المستخدم: {question}\n"
+            f"قارن بدقة بين تغطية محافظة {detected_govs[0]} وتغطية محافظة {detected_govs[1]} بناءً على الأخبار أعلاه فقط، "
+            f"واذكر اسم المصدر ورقم المرجع [1] أو [2] أمام كل نقطة:"
+        )
+    else:
+        task_instruction = (
+            f"سؤال المستخدم: {question}\n"
+            f"أجب باللغة العربية الفصحى في نقاط واضحة وموجزة بالاعتماد على البيانات والأخبار أعلاه فقط، مع وضع رقم المرجع [1] أو [2] واسم الصحيفة أمام كل خبر:"
+        )
+
+    user_prompt = f"<context>\n{context_str}\n</context>\n\n{task_instruction}"
 
     cfg = get_llm_config()
     payload = {
@@ -924,13 +1141,26 @@ def answer_question_with_rag(
 
     raw_answer = _call_with_backoff(_do_rag_llm, max_attempts=2)
     clean_answer = _strip_cjk(raw_answer)
-    # Convert markdown bold/newlines into clean HTML for the chat bubble
-    html_answer = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", clean_answer)
+
+    # 1. Clean redundant boilerplate phrases (e.g. 'الخبر الأول يتحدث عن' or 'خبر رقم 1')
+    cleaned_body = re.sub(
+        r"(?:الخبر الأول|الخبر الثاني|الخبر الثالث|الخبر الرابع|الخبر الخامس|الخبر السادس|خبر رقم \[\d+\]|خبر رقم \d+)\s*(?:يتحدث عن|وهو عن|عن)?\s*",
+        "",
+        clean_answer,
+    )
+    # 2. Convert markdown bold
+    html_answer = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", cleaned_body)
+    # 3. Validate inline citations [N]
     html_answer, cited_indices = _validate_inline_citations(html_answer, len(retrieved))
+    # 4. Format every reference into a neat bullet point on a new line
+    html_answer = re.sub(r"(?:<br\s*/?>|\n)*\s*<strong>\[(\d+)\]</strong>", r"<br/><br/>• <strong>[\1]</strong>", html_answer)
+    html_answer = re.sub(r"^<br/><br/>", "", html_answer).strip()
+    if html_answer.startswith("<strong>["):
+        html_answer = "• " + html_answer
     html_answer = html_answer.replace("\n", "<br/>")
 
     q_tokens = _extract_query_tokens(question)
-    sources = [
+    all_sources = [
         {
             "ref_index": idx,
             "cited_in_answer": idx in cited_indices,
@@ -946,10 +1176,14 @@ def answer_question_with_rag(
         }
         for idx, r in enumerate(retrieved, start=1)
     ]
+    # Filter sources to only cited ones if available, or up to effective_k
+    filtered_sources = [s for s in all_sources if s["cited_in_answer"]]
+    if not filtered_sources:
+        filtered_sources = all_sources[:effective_k]
 
     return {
         "answer": html_answer,
-        "sources": sources,
+        "sources": filtered_sources,
         "cited_indices": cited_indices,
         "chunks_used": len(retrieved),
     }
