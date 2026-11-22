@@ -847,8 +847,15 @@ def _build_governorate_comparison_stats(
 
 
 def _extract_query_tokens(question: str) -> set[str]:
-    raw_tokens = _tokenize_for_grounding(question)
-    filtered = {t for t in raw_tokens if t not in _QUESTION_STOPWORDS and not t.isdigit()}
+    # Strip Arabic and English punctuation including ؟, ?, !, ., ,, ،, :, -, etc.
+    cleaned_q = re.sub(r"[؟\?!\.,،:؛\-_/\\\"'()\[\]{}]+", " ", question)
+    raw_tokens = _tokenize_for_grounding(cleaned_q)
+    filtered = {
+        re.sub(r"[^\w]", "", t).strip()
+        for t in raw_tokens
+        if t not in _QUESTION_STOPWORDS and not t.isdigit()
+    }
+    filtered = {t for t in filtered if t and t not in _QUESTION_STOPWORDS}
     return filtered
 
 
@@ -914,9 +921,14 @@ def hybrid_retrieve(
                     JOIN analyzed_articles aa ON aa.canonical_url = hia.canonical_url
                     JOIN article_chunks ac ON ac.article_id = aa.id AND ac.chunk_index = 0
                     WHERE hia.impact_level IN ('حرج', 'مرتفع')
+                      AND aa.category NOT IN ('فن', 'أخرى')
+                      AND aa.title NOT ILIKE '%%شخصية اليوم%%'
+                      AND aa.title NOT ILIKE '%%تفسير حلم%%'
+                      AND aa.title NOT ILIKE '%%أسعار الخضراوات%%'
+                      AND aa.title NOT ILIKE '%%أسعار البقوليات%%'
                       AND aa.title NOT ILIKE '%%الكنيست%%'
                       {date_clause}
-                    ORDER BY aa.published_at DESC NULLS LAST, hia.confidence_score DESC
+                    ORDER BY hia.confidence_score DESC, aa.published_at DESC
                     LIMIT %s;
                     """,
                     alert_params,
@@ -1263,9 +1275,13 @@ def answer_question_with_rag(
         cited_indices = []
         for idx, item in enumerate(retrieved[:effective_k], start=1):
             src = item.get("source_name") or "المصدر"
-            headline_claim = item.get("summary_generated") or item.get("title")
-            headline_claim = re.sub(r"^.+?:\s*", "", headline_claim).strip()
-            bullet_lines.append(f"• <strong>[{idx}] {src}:</strong> {headline_claim}")
+            title = (item.get("title") or "").strip()
+            summary = (item.get("summary_generated") or "").strip()
+            # Clean pipeline internal labels if any
+            summary = re.sub(r"(?:المشكلات المرصودة|المشكلة|الحدث|المرحلة|الكيانات):.*$", "", summary, flags=re.M).strip()
+            first_sent = re.split(r"[.\n]", summary)[0].strip() if summary else title
+            claim = first_sent if len(first_sent) > 20 else title
+            bullet_lines.append(f"• <strong>[{idx}] {src}:</strong> {claim}")
             cited_indices.append(idx)
         fast_html = "<br/><br/>".join(bullet_lines)
         sources = [
