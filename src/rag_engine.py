@@ -898,14 +898,48 @@ _GENERIC_QUERY_MODIFIERS = {
 }
 
 
+_COLLOQUIAL_COMMODITY_SYNONYMS: dict[str, tuple[str, ...]] = {
+    "بتنجان": ("باذنجان", "بتنجان", "بدنجان"),
+    "باذنجان": ("باذنجان", "بتنجان", "بدنجان"),
+    "قوط": ("طماطم", "قوطه", "اوطه"),
+    "اوط": ("طماطم", "قوطه", "اوطه"),
+    "طماطم": ("طماطم", "قوطه", "اوطه"),
+    "بطاطس": ("بطاطس",),
+    "بصل": ("بصل",),
+    "خيار": ("خيار",),
+    "فراخ": ("دواجن", "فراخ"),
+    "دواجن": ("دواجن", "فراخ"),
+    "لحم": ("لحوم", "لحم"),
+    "عيش": ("خبز", "عيش"),
+    "خبز": ("خبز", "عيش"),
+    "رز": ("ارز", "رز"),
+    "ارز": ("ارز", "رز"),
+    "كفت": ("كفته", "كفتة"),
+    "دولار": ("دولار",),
+    "ذهب": ("ذهب",),
+    "بنزين": ("بنزين", "سولار", "وقود"),
+}
+
+
 def _extract_subject_stems(tokens: set[str]) -> list[str]:
-    """Extract 3+ char Arabic lexical stems for specific entities/subjects (e.g. 'الكفته' -> 'كفت')."""
+    """Extract 3+ char Arabic lexical stems for specific entities/subjects (e.g. 'الكفته' -> 'كفت', 'البتنجان' -> 'باذنجان')."""
     stems: list[str] = []
     for t in tokens:
         clean = re.sub(r"^(?:ال|لل|بال|فال|كال)", "", t)
         clean = re.sub(r"[ةه]$", "", clean)
         clean = _normalize_arabic_for_match(clean)
-        if len(clean) >= 3 and clean not in stems:
+        expanded = False
+        for key, variants in _COLLOQUIAL_COMMODITY_SYNONYMS.items():
+            if clean == key or key in clean:
+                for v in variants:
+                    norm_v = _normalize_arabic_for_match(v)
+                    v_stem = re.sub(r"^(?:ال|لل|بال|فال|كال)", "", norm_v)
+                    v_stem = re.sub(r"[ةه]$", "", v_stem)
+                    if len(v_stem) >= 3 and v_stem not in stems:
+                        stems.append(v_stem)
+                expanded = True
+                break
+        if not expanded and len(clean) >= 3 and clean not in stems:
             stems.append(clean)
     return stems
 
@@ -1455,15 +1489,20 @@ def answer_question_with_rag(
     if not clean_answer:
         fallback_lines = []
         is_price_q = any(w in norm_q.split() for w in ("سعر", "اسعار", "أسعار", "كام", "تكلفه", "تكلفة"))
+        subject_stems = _extract_subject_stems(specific_tokens) if specific_tokens else []
         for idx, item in enumerate(retrieved[:effective_k], start=1):
             src = item.get("source_name") or "المصدر"
-            quote = item.get("summary_generated") or item.get("title")
+            title = (item.get("title") or "").strip()
+            summary = (item.get("summary_generated") or "").strip()
+            title_norm = _normalize_arabic_for_match(title)
+            title_has_subject = any(s in title_norm for s in subject_stems) if subject_stems else False
+            quote = title if title_has_subject else (summary or title)
             quote = re.sub(r"^.+?:\s*", "", quote).strip()
             c_text = " ".join(item.get("chunks", []) or [item.get("chunk_text", "")])
-            has_price_data = any(w in c_text or w in quote or w in item.get("title", "") for w in ("جنيه", "قرش", "شراء", "بيع", "للكيلو", "للطن", "للقرص", "سعر", "اسعار"))
+            has_price_data = any(w in c_text or w in quote or w in title for w in ("جنيه", "قرش", "شراء", "بيع", "للكيلو", "للطن", "للقرص", "سعر", "اسعار"))
             if is_price_q and not has_price_data and specific_tokens:
                 sub_display = " ".join(specific_tokens)
-                quote = f"لم ترصد التقارير الاقتصادية مؤخرًا أسعارًا رسمية لـ «{sub_display}»، بينما تضمنت الأخبار الرقابية: {item.get('title')}"
+                quote = f"لم ترصد التقارير الاقتصادية مؤخرًا أسعارًا رسمية لـ «{sub_display}»، بينما تضمنت الأخبار الرقابية: {title}"
             fallback_lines.append(f"• <strong>[{idx}] {src}:</strong> {quote}")
         return {
             "answer": "<br/><br/>".join(fallback_lines),
