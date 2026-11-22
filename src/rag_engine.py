@@ -343,7 +343,7 @@ def _dot_similarity(vec_a: list[float], vec_b: list[float]) -> float:
 
 _QUESTION_STOPWORDS = {
     "ما", "ماذا", "هل", "كيف", "اين", "متي", "امتي", "ليه", "ايه", "إيه",
-    "اهم", "أهم", "ابرز", "أبرز", "اخر", "آخر", "اخبار", "أخبار", "خبر",
+    "اهم", "أهم", "ابرز", "أبرز", "اخر", "آخر", "اخبار", "أخبار", "خبر", "اخبرا", "الاخبرا",
     "الاخبار", "الأخبار", "الوارده", "الواردة", "الموجوده", "الموجودة", "المرصوده",
     "مصر", "المصريه", "المصري", "اليوم", "النهارده", "الان", "حاليا", "حول", "بشان",
     "كم", "عدد", "اجمالي", "إجمالي", "هي", "هو", "عن", "في", "من", "علي", "الى", "التي", "الذي", "اللي",
@@ -370,8 +370,11 @@ def _detect_category_from_text(norm_q: str) -> str | None:
 
 
 def _is_count_or_stats_question(norm_q: str) -> bool:
-    stat_triggers = ("كم عدد", "ما عدد", "عدد الاخبار", "عدد اخبار", "كم خبر", "اجمالي عدد", "احصائيات", "كم مشكله", "ما اجمالي")
-    return any(t in norm_q for t in stat_triggers)
+    stat_triggers = (
+        "كم عدد", "ما عدد", "عدد الاخبار", "عدد اخبار", "عدد الاخبرا",
+        "كم خبر", "اجمالي", "احصائيات", "كم مشكله", "عدد المشكلات", "عدد الاحداث",
+    )
+    return any(t in norm_q for t in stat_triggers) or bool(re.search(r"\b(عدد|اجمالي|احصائيات)\b", norm_q))
 
 
 def _is_general_top_news_question(q_tokens: set[str], detected_gov: str | None, detected_cat: str | None) -> bool:
@@ -379,8 +382,12 @@ def _is_general_top_news_question(q_tokens: set[str], detected_gov: str | None, 
     return len(q_tokens) == 0 and not detected_gov and not detected_cat
 
 
-def _fetch_live_db_stats_summary(governorate: str | None = None, category: str | None = None) -> str:
-    """Query PostgreSQL for exact article/category/alert/issue counts to ground statistical questions."""
+def _build_deterministic_stats_answer_html(
+    governorate: str | None = None,
+    category: str | None = None,
+    retrieved_examples: list[dict[str, Any]] | None = None,
+) -> str:
+    """Build an exact, 100% accurate HTML answer directly from PostgreSQL for count/statistics queries."""
     with psycopg2.connect(**get_db_config(), cursor_factory=RealDictCursor, connect_timeout=10) as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -404,6 +411,7 @@ def _fetch_live_db_stats_summary(governorate: str | None = None, category: str |
                 """
             )
             cat_rows = [dict(r) for r in cur.fetchall()]
+            cat_map = {r["category"]: int(r["cnt"]) for r in cat_rows}
 
             cur.execute(
                 """
@@ -415,29 +423,59 @@ def _fetch_live_db_stats_summary(governorate: str | None = None, category: str |
             )
             src_rows = [dict(r) for r in cur.fetchall()]
 
-            gov_info = ""
+            gov_cnt = 0
+            gov_cat_cnt = 0
             if governorate:
                 cur.execute(
-                    """
-                    SELECT COUNT(DISTINCT article_id) AS cnt
-                    FROM article_chunks
-                    WHERE governorate = %s;
-                    """,
+                    "SELECT COUNT(DISTINCT article_id) AS cnt FROM article_chunks WHERE governorate = %s;",
                     (governorate,),
                 )
-                g_cnt = int((cur.fetchone() or {}).get("cnt", 0))
-                gov_info = f"\n- إجمالي الأخبار المرتبطة بمحافظة {governorate}: {g_cnt} خبر"
+                gov_cnt = int((cur.fetchone() or {}).get("cnt", 0))
+                if category:
+                    cur.execute(
+                        "SELECT COUNT(DISTINCT article_id) AS cnt FROM article_chunks WHERE governorate = %s AND category = %s;",
+                        (governorate, category),
+                    )
+                    gov_cat_cnt = int((cur.fetchone() or {}).get("cnt", 0))
 
-    cat_str = " | ".join(f"{r['category']}: {r['cnt']} خبر" for r in cat_rows)
-    src_str = " | ".join(f"{r['source_name']}: {r['cnt']} خبر" for r in src_rows)
-    return (
-        f"إحصائيات قاعدة البيانات الرسمية اللحظية (إجمالي الأرشيف الكامل وليس فقط الأمثلة المرفقة):\n"
-        f"- إجمالي المقالات المحللة في قاعدة البيانات: {ov.get('total_articles', 0)} مقال\n"
-        f"- توزيع الأخبار حسب القسم: ({cat_str})\n"
-        f"- توزيع الأخبار حسب الصحيفة: ({src_str})\n"
-        f"- إجمالي الأخبار القومية عالية الأثر: {ov.get('total_alerts', 0)} تنبيه | الأحداث المهيكلة: {ov.get('total_events', 0)} حدث | المشكلات المرصودة: {ov.get('total_issues', 0)} مشكلة | القصص المشتركة بين الصحف: {ov.get('multi_source_stories', 0)} قصة"
-        f"{gov_info}"
-    )
+    total_articles = int(ov.get("total_articles", 0))
+    lines: list[str] = []
+
+    if governorate and category:
+        lines.append(
+            f"📊 <strong>إجمالي أخبار قسم ({category}) في محافظة {governorate}:</strong> <strong>{gov_cat_cnt} خبر</strong> "
+            f"(من إجمالي {gov_cnt} خبر مرتبط بمحافظة {governorate}، و{total_articles} مقال في قاعدة البيانات)."
+        )
+    elif category:
+        cat_count = cat_map.get(category, 0)
+        pct = round(100.0 * cat_count / max(1, total_articles), 1)
+        lines.append(
+            f"📊 <strong>إجمالي أخبار قسم ({category}) في قاعدة البيانات:</strong> <strong>{cat_count} خبر</strong> "
+            f"(بنسبة {pct}% من إجمالي الأرشيف البالغ <strong>{total_articles} مقالًا محللًا</strong>)."
+        )
+    elif governorate:
+        lines.append(
+            f"📊 <strong>إجمالي الأخبار المرتبطة بمحافظة {governorate}:</strong> <strong>{gov_cnt} خبر</strong> "
+            f"(من إجمالي {total_articles} مقالًا محللًا في قاعدة البيانات)."
+        )
+    else:
+        cat_summary = " • ".join(f"<strong>{r['category']}:</strong> {r['cnt']}" for r in cat_rows)
+        src_summary = " • ".join(f"<strong>{r['source_name']}:</strong> {r['cnt']}" for r in src_rows)
+        lines.append(f"📊 <strong>إجمالي المقالات المحللة في قاعدة البيانات:</strong> <strong>{total_articles} مقال</strong>")
+        lines.append(f"• <strong>توزيع الأقسام:</strong> {cat_summary}")
+        lines.append(f"• <strong>توزيع الصحف:</strong> {src_summary}")
+        lines.append(
+            f"• <strong>المؤشرات الذكية:</strong> {ov.get('total_alerts', 0)} تنبيه عالي الأثر • "
+            f"{ov.get('total_events', 0)} حدث مهيكل • {ov.get('total_issues', 0)} مشكلة مرصودة • "
+            f"{ov.get('multi_source_stories', 0)} قصة مشتركة بين الصحف."
+        )
+
+    if retrieved_examples:
+        lines.append("<br/><strong>أحدث الأمثلة المرصودة من هذا التصنيف:</strong>")
+        for idx, item in enumerate(retrieved_examples[:4], start=1):
+            lines.append(f"• <strong>[{idx}] {item['source_name']}:</strong> {item['title']}")
+
+    return "<br/>".join(lines)
 
 
 def _extract_query_tokens(question: str) -> set[str]:
@@ -705,9 +743,38 @@ def answer_question_with_rag(
             "chunks_used": 0,
         }
 
-    stats_block = ""
+    q_tokens = _extract_query_tokens(question)
+
+    # For count / statistics queries, return exact deterministic PostgreSQL counts directly (no 3B counting error)
     if is_stats_q:
-        stats_block = _fetch_live_db_stats_summary(governorate=detected_gov, category=detected_cat) + "\n\n"
+        html_answer = _build_deterministic_stats_answer_html(
+            governorate=detected_gov,
+            category=detected_cat,
+            retrieved_examples=retrieved,
+        )
+        cited_indices = list(range(1, min(5, len(retrieved)) + 1))
+        sources = [
+            {
+                "ref_index": idx,
+                "cited_in_answer": idx in cited_indices,
+                "article_id": r["article_id"],
+                "title": r["title"],
+                "source_name": r["source_name"],
+                "category": r["category"],
+                "governorate": r["governorate"],
+                "published_at": r.get("published_at"),
+                "supporting_quote": _extract_verbatim_supporting_quote(r, q_tokens),
+                "canonical_url": r["canonical_url"],
+                "score": round(r["score"], 3),
+            }
+            for idx, r in enumerate(retrieved, start=1)
+        ]
+        return {
+            "answer": html_answer,
+            "sources": sources,
+            "cited_indices": cited_indices,
+            "chunks_used": len(retrieved),
+        }
 
     context_blocks = []
     for idx, item in enumerate(retrieved, start=1):
@@ -716,7 +783,7 @@ def answer_question_with_rag(
     context_str = "\n\n".join(context_blocks)
 
     user_prompt = (
-        f"<context>\n{stats_block}{context_str}\n</context>\n\n"
+        f"<context>\n{context_str}\n</context>\n\n"
         f"سؤال المستخدم: {question}\n"
         f"أجب باللغة العربية الفصحى في نقاط واضحة بالاعتماد على البيانات والأخبار أعلاه فقط، مع وضع رقم المرجع [1] أو [2] أمام كل خبر مستشهد به:"
     )
