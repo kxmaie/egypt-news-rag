@@ -436,6 +436,10 @@ def _extract_target_date_from_question(norm_q: str) -> str | None:
     if any(w in clean_words for w in ("النهارده", "النهاردة", "النهاردا")) or ("اليوم" in clean_words and "سوق" not in clean_words):
         return today.isoformat()
 
+    # 5. Tomorrow ('بكره' / 'بكرا' / 'غدا' / 'غداً')
+    if any(w in clean_words for w in ("بكره", "بكرا", "غدا", "غدا")):
+        return (today + timedelta(days=1)).isoformat()
+
     # 4. Arabic Weekday ('يوم الخميس' / 'الخميس اللي فات' / 'الجمعه')
     for day_name, target_wd in _ARABIC_WEEKDAYS.items():
         if day_name in norm_q:
@@ -631,7 +635,7 @@ _CATEGORY_SYNONYMS: dict[str, tuple[str, ...]] = {
     "اقتصاد": ("اقتصاد", "اقتصادي", "اقتصاديه", "الاقتصاد", "الاقتصاديه", "الاقتصادي", "بورصه", "بنوك", "استثمار", "اسعار", "ذهب", "دولار", "مصانع"),
     "صحة": ("صحه", "صحي", "صحيه", "الصحه", "الصحيه", "مستشفي", "اطباء", "علاج", "ادويه"),
     "حوادث": ("حوادث", "حادث", "امني", "امنيه", "الامنيه", "شرطه", "داخليه", "مباحث", "قضائ", "محكمه", "نيابه"),
-    "رياضة": ("رياضه", "رياضي", "رياضيه", "الرياضه", "الرياضيه", "كره", "اهلي", "زمالك", "منتخب", "دوري"),
+    "رياضة": ("رياضه", "رياضي", "رياضيه", "الرياضه", "الرياضيه", "كره القدم", "كره سله", "كرة", "اهلي", "زمالك", "منتخب", "دوري"),
     "تعليم": ("تعليم", "تعليمي", "تعليميه", "التعليم", "التعليميه", "جامعه", "مدارس", "طلاب", "امتحانات"),
     "مجتمع": ("مجتمع", "مجتمعي", "اجتماعي", "اجتماعيه", "المجتمع", "تضامن", "معاشات", "مواطنين", "تامينات"),
     "تكنولوجيا": ("تكنولوجيا", "تكنولوجي", "رقمي", "رقميه", "ذكاء اصطناعي", "انترنت", "اتصالات"),
@@ -640,9 +644,13 @@ _CATEGORY_SYNONYMS: dict[str, tuple[str, ...]] = {
 
 
 def _detect_category_from_text(norm_q: str) -> str | None:
+    words = set(norm_q.split())
     for canonical_cat, variants in _CATEGORY_SYNONYMS.items():
-        if any(v in norm_q for v in variants):
-            return canonical_cat
+        for v in variants:
+            if " " in v and v in norm_q:
+                return canonical_cat
+            elif " " not in v and v in words:
+                return canonical_cat
     return None
 
 
