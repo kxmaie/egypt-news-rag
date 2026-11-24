@@ -387,10 +387,10 @@ _QUESTION_STOPWORDS = {
     "الاخبار", "الأخبار", "الوارده", "الواردة", "الموجوده", "الموجودة", "المرصوده",
     "مقال", "مقالين", "مقالات", "عنوان", "عناوين", "حدث", "حدثين", "احداث", "الاحداث",
     "مصر", "المصريه", "المصري", "اليوم", "النهارده", "الان", "حاليا", "حول", "بشان",
-    "امبارح", "انبارح", "امس", "البارحه", "اول", "يوم", "اللي", "اللى", "فات", "الماضي", "الماضيه", "السابق",
+    "امبارح", "انبارح", "النبارح", "البارح", "امس", "البارحه", "اول", "يوم", "اللي", "اللى", "فات", "الماضي", "الماضيه", "السابق",
     "السبت", "الاحد", "الاثنين", "الثلاثاء", "الاربعاء", "الخميس", "الجمعه",
     "يناير", "فبراير", "مارس", "ابريل", "مايو", "يونيو", "يوليو", "اغسطس", "سبتمبر", "اكتوبر", "نوفمبر", "ديسمبر",
-    "كم", "عدد", "اجمالي", "إجمالي", "هي", "هو", "عن", "في", "من", "علي", "الى", "التي", "الذي",
+    "كم", "كام", "عدد", "عددها", "عددهم", "اعداد", "أعداد", "اعدادها", "أعدادها", "اعدادهم", "أعدادهم", "اجمالي", "إجمالي", "احصائيات", "إحصائيات", "احصائيه", "إحصائية", "هي", "هو", "عن", "في", "من", "علي", "الى", "التي", "الذي",
     "طب", "طيب", "لو", "سمحت", "قولي", "هات", "اعرض", "اذكر", "عاوز", "عايز",
     "واحد", "اثنين", "ثلاث", "ثلاثه", "اربع", "اربعه", "خمس", "خمسه", "ست", "سته", "سبع", "سبعه", "عشر", "عشره",
     "تريند", "التريند", "ترند", "الترند", "تريندات", "التريندات", "ترندات", "الترندات", "رائج", "الرائج", "شائع", "الشائع", "متداول", "المتداول", "ضجة", "الضجة",
@@ -413,7 +413,7 @@ _ARABIC_MONTH_NAMES: dict[str, int] = {
 
 
 def _extract_target_date_from_question(norm_q: str) -> str | None:
-    """Parse relative or explicit Arabic dates ('انبارح', 'اول انبارح', 'الخميس اللي فات', 'يوم 18', '2026-11-18') into YYYY-MM-DD."""
+    """Parse relative or explicit Arabic dates ('انبارح', 'النبارح', 'اول انبارح', 'الخميس اللي فات', 'يوم 18', '2026-11-18') into YYYY-MM-DD."""
     today = datetime.now(CAIRO_TZ).date()
 
     # 1. Explicit ISO date YYYY-MM-DD
@@ -424,42 +424,49 @@ def _extract_target_date_from_question(norm_q: str) -> str | None:
         except ValueError:
             pass
 
-    # 2. Day before yesterday ('أول امبارح' / 'اول انبارح' / 'أول أمس')
-    if any(p in norm_q for p in ("اول امبارح", "اول انبارح", "اول امس", "قبل امبارح", "قبل انبارح")):
+    clean_q = re.sub(r"[^\w\s-]", " ", norm_q)
+    clean_words = clean_q.split()
+    words_set = set(clean_words)
+
+    # 2. Day before yesterday ('أول امبارح' / 'اول انبارح' / 'اول النبارح' / 'أول أمس')
+    if any(p in clean_q for p in ("اول امبارح", "اول انبارح", "اول النبارح", "اول البارح", "اول امس", "قبل امبارح", "قبل انبارح", "قبل النبارح", "قبل امس")):
         return (today - timedelta(days=2)).isoformat()
 
-    # 3. Yesterday ('امبارح' / 'انبارح' / 'أمس' / 'البارحة')
-    if any(w in norm_q.split() for w in ("امبارح", "انبارح", "امس", "البارحه")):
+    # 3. Yesterday ('امبارح' / 'انبارح' / 'النبارح' / 'البارح' / 'أمس' / 'البارحة')
+    yesterday_words = {"امبارح", "انبارح", "النبارح", "البارح", "البارحه", "البارحة", "امس", "أمس"}
+    if words_set.intersection(yesterday_words) or "منذ امس" in clean_q or "من امبارح" in clean_q:
         return (today - timedelta(days=1)).isoformat()
 
     # 4. Today ('النهارده' / 'اليوم' / 'هذا اليوم')
-    clean_words = norm_q.split()
-    if any(w in clean_words for w in ("النهارده", "النهاردة", "النهاردا")) or ("اليوم" in clean_words and "سوق" not in clean_words):
-        return today.isoformat()
+    today_words = {"النهارده", "النهاردة", "النهاردا", "اليوم"}
+    if words_set.intersection(today_words):
+        if "سوق" not in words_set:  # Avoid matching 'سوق اليوم الواحد'
+            return today.isoformat()
 
     # 5. Tomorrow ('بكره' / 'بكرا' / 'غدا' / 'غداً')
-    if any(w in clean_words for w in ("بكره", "بكرا", "غدا", "غدا")):
+    tomorrow_words = {"بكره", "بكرا", "غدا", "غداً"}
+    if words_set.intersection(tomorrow_words):
         return (today + timedelta(days=1)).isoformat()
 
-    # 4. Arabic Weekday ('يوم الخميس' / 'الخميس اللي فات' / 'الجمعه')
+    # 6. Arabic Weekday ('يوم الخميس' / 'الخميس اللي فات' / 'الجمعه')
     for day_name, target_wd in _ARABIC_WEEKDAYS.items():
-        if day_name in norm_q:
+        if day_name in words_set or day_name in clean_q:
             days_ago = (today.weekday() - target_wd) % 7
-            if days_ago == 0 and any(k in norm_q for k in ("فات", "الماضي", "السابق")):
+            if days_ago == 0 and any(k in clean_q for k in ("فات", "الماضي", "السابق")):
                 days_ago = 7
             return (today - timedelta(days=days_ago)).isoformat()
 
-    # 5. Day + Arabic Month ('18 نوفمبر' / 'يوم 18 نوفمبر')
+    # 7. Day + Arabic Month ('18 نوفمبر' / 'يوم 18 نوفمبر')
     for m_name, m_num in _ARABIC_MONTH_NAMES.items():
-        m_match = re.search(rf"\b(\d{{1,2}})\s+{m_name}\b", norm_q)
+        m_match = re.search(rf"\b(\d{{1,2}})\s+{m_name}\b", clean_q)
         if m_match:
             try:
                 return date(today.year, m_num, int(m_match.group(1))).isoformat()
             except ValueError:
                 pass
 
-    # 6. Explicit day of month ('يوم 18' / 'بتاريخ 19')
-    m_day = re.search(r"\b(?:يوم|بتاريخ)\s+(\d{1,2})\b", norm_q)
+    # 8. Explicit day of month ('يوم 18' / 'بتاريخ 19')
+    m_day = re.search(r"\b(?:يوم|بتاريخ)\s+(\d{1,2})\b", clean_q)
     if m_day:
         day_num = int(m_day.group(1))
         if 1 <= day_num <= 31:
@@ -573,29 +580,33 @@ def _detect_topic_stem(norm_q: str) -> tuple[str | None, str | None]:
 def _extract_timeframe_days_and_date(norm_q: str) -> tuple[int | None, str | None]:
     """Parse relative time windows (اليوم, منذ أمس, آخر يومين, آخر 3 أيام, هذا الأسبوع, الأسبوع الماضي, هذا الشهر, آخر 30 يوماً)."""
     today = datetime.now(CAIRO_TZ).date()
+    clean_q = re.sub(r"[^\w\s-]", " ", norm_q)
+    clean_words = set(clean_q.split())
 
-    if any(p in norm_q for p in ("اول امبارح", "اول انبارح", "اول امس", "قبل امبارح", "قبل انبارح")):
+    if any(p in clean_q for p in ("اول امبارح", "اول انبارح", "اول النبارح", "اول البارح", "اول امس", "قبل امبارح", "قبل انبارح", "قبل النبارح")):
         return 2, (today - timedelta(days=2)).isoformat()
 
-    if any(w in norm_q.split() for w in ("امس", "امبارح", "انبارح", "البارحه")) or "منذ امس" in norm_q:
+    yesterday_words = {"امس", "امبارح", "انبارح", "النبارح", "البارح", "البارحه", "البارحة"}
+    if clean_words.intersection(yesterday_words) or "منذ امس" in clean_q or "من امبارح" in clean_q:
         return 2, (today - timedelta(days=1)).isoformat()
 
-    if any(p in norm_q for p in ("اليوم", "النهارده", "خلال اليوم", "اخر 24 ساعه", "خلال 24 ساعه")):
+    today_words = {"اليوم", "النهارده", "النهاردة", "النهاردا"}
+    if clean_words.intersection(today_words) or any(p in clean_q for p in ("خلال اليوم", "اخر 24 ساعه", "خلال 24 ساعه")):
         return 1, today.isoformat()
 
-    if any(p in norm_q for p in ("اخر يومين", "خلال يومين", "يومين")):
+    if any(p in clean_q for p in ("اخر يومين", "خلال يومين", "يومين")):
         return 2, None
 
-    if any(p in norm_q for p in ("اخر 3 ايام", "خلال 3 ايام", "اخر ثلاثه ايام", "خلال ثلاثه ايام", "اخر 3 يوما")):
+    if any(p in clean_q for p in ("اخر 3 ايام", "خلال 3 ايام", "اخر ثلاثه ايام", "خلال ثلاثه ايام", "اخر 3 يوما")):
         return 3, None
 
-    if any(p in norm_q for p in ("هذا الاسبوع", "خلال هذا الاسبوع", "اخر اسبوع", "خلال الاسبوع", "الاسبوع الحالي", "اخر 7 ايام")):
+    if any(p in clean_q for p in ("هذا الاسبوع", "خلال هذا الاسبوع", "اخر اسبوع", "خلال الاسبوع", "الاسبوع الحالي", "اخر 7 ايام")):
         return 7, None
 
-    if any(p in norm_q for p in ("الاسبوع الماضي", "خلال الاسبوع الماضي", "الاسبوع السابق")):
+    if any(p in clean_q for p in ("الاسبوع الماضي", "خلال الاسبوع الماضي", "الاسبوع السابق")):
         return 14, None
 
-    if any(p in norm_q for p in ("هذا الشهر", "خلال هذا الشهر", "اخر شهر", "اخر 30 يوم", "اخر 30 يوما", "خلال 30 يوم")):
+    if any(p in clean_q for p in ("هذا الشهر", "خلال هذا الشهر", "اخر شهر", "اخر 30 يوم", "اخر 30 يوما", "خلال 30 يوم")):
         return 30, None
 
     target_date = _extract_target_date_from_question(norm_q)
@@ -656,11 +667,23 @@ def _detect_category_from_text(norm_q: str) -> str | None:
 
 
 def _is_count_or_stats_question(norm_q: str) -> bool:
+    clean_q = re.sub(r"[^\w\s]", " ", norm_q)
     stat_triggers = (
         "كم عدد", "ما عدد", "عدد الاخبار", "عدد اخبار", "عدد الاخبرا",
         "كم خبر", "اجمالي", "احصائيات", "كم مشكله", "عدد المشكلات", "عدد الاحداث",
+        "كام خبر", "كام مقال", "كم مقال", "كام حدث", "كم حدث",
+        "عددها كام", "عددهم كام", "اعدادها كام", "اعدادهم كام",
+        "ايه عددهم", "ايه عددها", "ما اعداد", "ما هي اعداد",
     )
-    return any(t in norm_q for t in stat_triggers) or bool(re.search(r"\b(عدد|اجمالي|احصائيات)\b", norm_q))
+    if any(t in clean_q for t in stat_triggers):
+        return True
+    if re.search(r"\b(عدد|عددها|عددهم|اعداد|اعدادها|اعدادهم|اجمالي|إجمالي|احصائيات|احصائيه)\b", clean_q):
+        return True
+    if re.search(r"\b(خبر|اخبار|مقال|مقالات|حدث|احداث)\b.*\b(كام|كم)\b", clean_q):
+        return True
+    if re.search(r"\b(كام|كم)\b.*\b(خبر|اخبار|مقال|مقالات|حدث|احداث)\b", clean_q):
+        return True
+    return False
 
 
 def _is_general_top_news_question(
@@ -784,9 +807,19 @@ def _build_deterministic_stats_answer_html(
             lines.append(f"• <strong>توزيع الأقسام:</strong> {cat_summary}")
 
     if retrieved_examples:
-        lines.append("<br/><strong>أحدث الأخبار في هذا القسم:</strong>")
-        for idx, item in enumerate(retrieved_examples[:4], start=1):
-            lines.append(f"• <strong>[{idx}] {item['source_name']}:</strong> {item['title']}")
+        matching_examples = [
+            item for item in retrieved_examples
+            if not target_date or (str(item.get("published_at") or "")[:10] == target_date)
+        ]
+        if matching_examples:
+            if category:
+                lines.append(f"<br/><strong>أحدث أخبار قسم ({category}){date_title}:</strong>")
+            elif governorate:
+                lines.append(f"<br/><strong>أحدث أخبار محافظة {governorate}{date_title}:</strong>")
+            else:
+                lines.append(f"<br/><strong>نماذج من الأخبار المرصودة{date_title}:</strong>")
+            for idx, item in enumerate(matching_examples[:4], start=1):
+                lines.append(f"• <strong>[{idx}] {item['source_name']}:</strong> {item['title']}")
 
     return "<br/>".join(lines)
 
@@ -901,9 +934,10 @@ _GENERIC_QUERY_MODIFIERS = {
     "سعر", "اسعار", "أسعار", "غلاء", "تكلفه", "تكلفة",
     "اخبار", "أخبار", "خبر", "مستجدات", "تفاصيل", "تطورات", "احداث", "أحداث", "حدث",
     "ايه", "إيه", "ما", "ماذا", "كام", "كم", "عن", "في", "اليوم", "النهارده", "امس", "أمس", "امبارح",
-    "انبارح", "غدا", "غداً", "بكره", "بكرا", "الان", "الآن", "حاليا", "اخر", "آخر", "اهم", "أهم", "ابرز", "أبرز", "جديد",
+    "انبارح", "النبارح", "البارح", "البارحه", "غدا", "غداً", "بكره", "بكرا", "الان", "الآن", "حاليا", "اخر", "آخر", "اهم", "أهم", "ابرز", "أبرز", "جديد",
     "سوق", "محافظة", "محافظه", "مصر", "تقرير", "بيان", "تصريح", "رسمي", "رسميه",
     "قسم", "قطاع", "مجال",
+    "عدد", "عددها", "عددهم", "اعداد", "أعداد", "اعدادها", "أعدادها", "اعدادهم", "أعدادهم", "اجمالي", "إجمالي", "احصائيات", "إحصائيات", "احصائيه", "إحصائية",
     "تريند", "التريند", "ترند", "الترند", "تريندات", "التريندات", "ترندات", "الترندات",
     "رائج", "الرائج", "شائع", "الشائع", "متداول", "المتداول", "ضجة", "الضجة",
 }
