@@ -141,6 +141,10 @@ def _build_chunks_for_article_row(row: dict[str, Any]) -> list[dict[str, Any]]:
         combined_text = f"{title} {entities_str} {summary}"
         for g_name in EGYPT_GOVERNORATES:
             if g_name in combined_text:
+                # Disambiguate 'الغربية' vs 'الضفة الغربية' / 'الدول الغربية'
+                if g_name == "الغربية" and any(w in combined_text for w in ("الضفة الغربية", "الدول الغربية", "التكتلات الغربية", "العواصم الغربية", "الحكومات الغربية", "العقوبات الغربية", "القوى الغربية", "المعسكر الغربي")):
+                    if not any(k in combined_text for k in ("محافظة الغربية", "طنطا", "المحلة", "كفر الزيات", "زفتى", "سمنود", "قطور", "بسيون")):
+                        continue
                 gov = g_name
                 break
 
