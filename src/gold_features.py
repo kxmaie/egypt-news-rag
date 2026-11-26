@@ -268,9 +268,9 @@ def extract_and_dispatch_alerts(
         alert_reasons: List[str] = []
         if label in ("إيجابي محتمل", "سلبي محتمل") and impact_level in ("حرج", "مرتفع") and impact_scope in ("قومي", "إقليمي"):
             alert_reasons.append(f"أثر {impact_level} ({impact_scope})")
-        if label in ("إيجابي محتمل", "سلبي محتمل") and media_count >= 2:
+        if label in ("إيجابي محتمل", "سلبي محتمل") and media_count >= 3 and cat not in ("رياضة", "فن", "أخرى") and impact_scope != "محلي":
             alert_reasons.append(f"تغطية متعددة المصادر ({media_count} مواقع)")
-        if has_severe_issue:
+        if has_severe_issue and (impact_scope in ("قومي", "إقليمي") or impact_level == "حرج"):
             alert_reasons.append("مشكلة مجتمعية/خدمية عالية الخطورة")
 
         if alert_reasons:
@@ -281,8 +281,8 @@ def extract_and_dispatch_alerts(
                 "tone": art.get("tone", "خبري موضوعي"),
                 "title": art.get("title", ""),
                 "impact_label": label,
-                "impact_level": impact_level or ("مرتفع" if media_count >= 2 else "متوسط"),
-                "impact_scope": impact_scope or ("قومي" if media_count >= 2 else "محلي"),
+                "impact_level": impact_level or "متوسط",
+                "impact_scope": impact_scope or "محلي",
                 "alert_reason": " + ".join(alert_reasons),
                 "confidence_score": quality_score,
                 "rationale": eg_imp.get("rationale", ""),

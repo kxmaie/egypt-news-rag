@@ -708,8 +708,13 @@ def get_all_articles(
     return {"total": total, "count": len(rows), "articles": rows}
 
 
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from src.rag_engine import answer_question_with_rag, sync_rag_chunks_and_embeddings
+from src.rag_engine import (
+    answer_question_with_rag,
+    answer_question_with_rag_stream,
+    sync_rag_chunks_and_embeddings,
+)
 
 
 class RagAskRequest(BaseModel):
@@ -718,6 +723,7 @@ class RagAskRequest(BaseModel):
     category: str | None = None
     days: int | None = None
     top_k: int = 5
+    history: list[dict[str, str]] | None = None
 
 
 @app.post("/api/rag/ask")
@@ -728,6 +734,28 @@ def rag_ask(req: RagAskRequest) -> dict[str, Any]:
         category=req.category or None,
         days=req.days if (req.days and req.days > 0) else None,
         top_k=max(1, min(10, req.top_k)),
+        history=req.history or None,
+    )
+
+
+@app.post("/api/rag/ask/stream")
+def rag_ask_stream(req: RagAskRequest) -> StreamingResponse:
+    """Stream real-time tokens and sources via Server-Sent Events (SSE)."""
+    return StreamingResponse(
+        answer_question_with_rag_stream(
+            question=req.question,
+            governorate=req.governorate or None,
+            category=req.category or None,
+            days=req.days if (req.days and req.days > 0) else None,
+            top_k=max(1, min(10, req.top_k)),
+            history=req.history or None,
+        ),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
     )
 
 

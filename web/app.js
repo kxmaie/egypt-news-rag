@@ -49,6 +49,14 @@ const EGYPT_OUTLINE_COORDS = [
   [25.00, 22.00], [25.00, 25.50], [24.75, 29.20], [25.00, 31.55],
 ];
 
+function getToneBadge(tone) {
+  if (!tone || tone === "غير محدد") return "";
+  let cls = "badge-tone";
+  if (tone.includes("مثير")) cls = "badge-tone-sensational";
+  else if (tone.includes("رأي") || tone.includes("تحليل")) cls = "badge-tone-opinion";
+  return `<span class="badge ${cls}">${tone}</span>`;
+}
+
 // Point-in-polygon check so holographic grid dots fill ONLY Egypt's real territory
 function isInsideEgypt(lon, lat) {
   let inside = false;
@@ -480,6 +488,7 @@ function renderDailyDigest(digestRow) {
           <span class="badge ${isPos ? "badge-pos" : "badge-neg"}">${isPos ? "إيجابي" : "سلبي"}</span>
           <span class="badge">${it.category || ""}</span>
           <span class="badge">${it.source_name || ""}</span>
+          ${getToneBadge(it.tone)}
         </div>
         <h3>${it.title}</h3>
         <p class="alert-rationale">${it.summary || it.rationale || ""}</p>
@@ -767,6 +776,7 @@ async function loadHighImpact(filter = "new") {
           <span class="badge ${al.impact_label.includes("إيجابي") ? "badge-pos" : "badge-neg"}">${al.impact_label}</span>
           ${al.impact_level ? `<span class="badge badge-amber">${al.impact_level} ${al.impact_scope ? "• " + al.impact_scope : ""}</span>` : ""}
           <span class="badge">${al.category}</span>
+          ${getToneBadge(al.tone)}
           ${al.alert_reason ? `<span class="badge">${al.alert_reason}</span>` : ""}
         </div>
         <h3>${al.title}</h3>
@@ -897,6 +907,7 @@ async function selectEntity(entityName, btnEl) {
         <div class="badges-row">
           <span class="badge">${a.category || ""}</span>
           <span class="badge">${a.source_name || ""}</span>
+          ${getToneBadge(a.tone)}
           ${a.impact_label ? `<span class="badge">${a.impact_label}</span>` : ""}
         </div>
         <h3>${a.title}</h3>
@@ -1037,6 +1048,7 @@ async function loadAllArticles(q = "", category = currentArticlesCategory) {
         <div class="badges-row">
           <span class="badge">${a.category || ""}</span>
           <span class="badge">${a.source_name || ""}</span>
+          ${getToneBadge(a.tone)}
           ${a.impact_label ? `<span class="badge ${a.impact_label.includes("إيجابي") ? "badge-pos" : a.impact_label.includes("سلبي") ? "badge-neg" : ""}">${a.impact_label}</span>` : ""}
           ${a.impact_level ? `<span class="badge badge-amber">${a.impact_level}</span>` : ""}
         </div>
@@ -1073,7 +1085,6 @@ document.addEventListener("DOMContentLoaded", () => {
   loadEntities();
   loadClusters();
   loadAllArticles();
-  loadDataQuality();
 
   const motionBtn = document.getElementById("btn-toggle-motion");
   if (motionBtn) {
@@ -1136,7 +1147,7 @@ function appendRagMessage(role, htmlText, sources = []) {
             (s, idx) => `
           <a class="rag-source-item" href="${s.canonical_url}" target="_blank" rel="noopener" style="flex-direction:column;align-items:flex-start;gap:4px;">
             <div style="display:flex;justify-content:space-between;width:100%;align-items:center;">
-              <span><strong>[${s.ref_index || idx + 1}] ${s.source_name || "مصدر"}${s.governorate ? " • " + s.governorate : ""}:</strong> ${(s.title || "").slice(0, 58)}...</span>
+              <span><strong>[${s.ref_index || idx + 1}] ${s.source_name || "مصدر"}${s.governorate ? " • " + s.governorate : ""}${s.tone && s.tone !== "غير محدد" ? " • " + s.tone : ""}:</strong> ${(s.title || "").slice(0, 58)}...</span>
               <span>↗</span>
             </div>
             ${s.supporting_quote ? `<div style="font-size:11.5px;color:#94a3b8;border-right:2px solid #2dd4bf;padding-right:6px;">"${s.supporting_quote}"</div>` : ""}
@@ -1177,7 +1188,98 @@ async function handleRagQuestion(questionText) {
   );
 
   try {
-    // 1. Try dedicated RAG backend endpoint if available
+    // 1. Try real-time streaming RAG endpoint first for instant token typing
+    try {
+      const streamRes = await fetch("/api/rag/ask/stream", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          question: q,
+          governorate: govFilter || null,
+          category: catFilter || null,
+          days: daysFilter,
+        }),
+      });
+
+      if (streamRes.ok && streamRes.body) {
+        if (thinkingMsg) thinkingMsg.remove();
+        const botMsg = appendRagMessage("bot", "");
+        const bubble = botMsg ? botMsg.querySelector(".rag-bubble") : null;
+        const container = document.getElementById("rag-messages");
+
+        const reader = streamRes.body.getReader();
+        const decoder = new TextDecoder("utf-8");
+        let buffer = "";
+        let accumulatedText = "";
+        let finalResult = null;
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const parts = buffer.split("\n\n");
+          buffer = parts.pop() || "";
+
+          for (const part of parts) {
+            const trimmed = part.trim();
+            if (!trimmed.startsWith("data: ")) continue;
+            try {
+              const data = JSON.parse(trimmed.slice(6));
+              if (data.type === "token") {
+                accumulatedText += data.content;
+                if (bubble) {
+                  let liveHtml = accumulatedText
+                    .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+                    .replace(/\n/g, "<br/>");
+                  bubble.innerHTML = liveHtml;
+                  if (container) container.scrollTop = container.scrollHeight;
+                }
+              } else if (data.type === "status") {
+                if (bubble && !accumulatedText) {
+                  bubble.innerHTML = `<span class="rag-typing"><span class="pulse-dot"></span> ${data.message}</span>`;
+                }
+              } else if (data.type === "final") {
+                finalResult = data;
+              }
+            } catch (err) {
+              // Ignore partial JSON parse errors
+            }
+          }
+        }
+
+        // Finalize with formatted HTML and sources
+        if (finalResult && bubble) {
+          bubble.innerHTML = finalResult.answer || accumulatedText;
+          if (finalResult.sources && finalResult.sources.length) {
+            const sourcesContainer = document.createElement("div");
+            sourcesContainer.className = "rag-sources";
+            sourcesContainer.innerHTML = `
+              <span class="rag-sources-title">المصادر والأدلة المقتبسة (${finalResult.sources.length}):</span>
+              ${finalResult.sources
+                .slice(0, 5)
+                .map(
+                  (s, idx) => `
+                <a class="rag-source-item" href="${s.canonical_url}" target="_blank" rel="noopener" style="flex-direction:column;align-items:flex-start;gap:4px;">
+                  <div style="display:flex;justify-content:space-between;width:100%;align-items:center;">
+                    <span><strong>[${s.ref_index || idx + 1}] ${s.source_name || "مصدر"}${s.governorate ? " • " + s.governorate : ""}${s.tone && s.tone !== "غير محدد" ? " • " + s.tone : ""}:</strong> ${(s.title || "").slice(0, 58)}...</span>
+                    <span>↗</span>
+                  </div>
+                  ${s.supporting_quote ? `<div style="font-size:11.5px;color:#94a3b8;border-right:2px solid #2dd4bf;padding-right:6px;">"${s.supporting_quote}"</div>` : ""}
+                </a>`
+                )
+                .join("")}
+            `;
+            botMsg.appendChild(sourcesContainer);
+          }
+          if (container) container.scrollTop = container.scrollHeight;
+        }
+        return;
+      }
+    } catch (streamErr) {
+      console.warn("Streaming RAG request failed, falling back to standard endpoint:", streamErr);
+    }
+
+    // 2. Standard RAG backend endpoint fallback
     const ragRes = await fetch("/api/rag/ask", {
       method: "POST",
       headers: { "Content-Type": "application/json" },

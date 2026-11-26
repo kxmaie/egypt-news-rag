@@ -7,8 +7,13 @@ import logging
 import math
 import os
 import re
+import queue
 import sys
+import threading
+import time
 import urllib.request
+from collections import OrderedDict
+from collections.abc import Callable, Generator
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -38,15 +43,59 @@ logger = logging.getLogger("egypt_news_rag_engine")
 
 DEFAULT_EMBED_MODEL = os.environ.get("RAG_EMBED_MODEL", "paraphrase-multilingual")
 
+
+class RAGResponseCache:
+    """Ultra-fast in-memory LRU + TTL response cache for RAG questions (sub-millisecond latency)."""
+
+    def __init__(self, maxsize: int = 350, ttl_seconds: float = 300.0) -> None:
+        self.maxsize = maxsize
+        self.ttl = ttl_seconds
+        self._cache: OrderedDict[str, tuple[float, dict[str, Any]]] = OrderedDict()
+
+    def _make_key(self, question: str, governorate: str | None, category: str | None) -> str:
+        q_norm = _normalize_arabic_for_match(question.strip().lower())
+        return f"{q_norm}|{governorate or ''}|{category or ''}"
+
+    def get(self, question: str, governorate: str | None = None, category: str | None = None) -> dict[str, Any] | None:
+        key = self._make_key(question, governorate, category)
+        entry = self._cache.get(key)
+        if not entry:
+            return None
+        created_at, val = entry
+        if time.time() - created_at > self.ttl:
+            self._cache.pop(key, None)
+            return None
+        self._cache.move_to_end(key)
+        return json.loads(json.dumps(val))
+
+    def set(self, question: str, val: dict[str, Any], governorate: str | None = None, category: str | None = None) -> None:
+        key = self._make_key(question, governorate, category)
+        if key in self._cache:
+            self._cache.move_to_end(key)
+        self._cache[key] = (time.time(), json.loads(json.dumps(val)))
+        if len(self._cache) > self.maxsize:
+            self._cache.popitem(last=False)
+
+    def clear(self) -> None:
+        self._cache.clear()
+
+
+_GLOBAL_RAG_CACHE = RAGResponseCache(maxsize=350, ttl_seconds=300.0)
+
 RAG_SYSTEM_PROMPT = """أنت المساعد الذكي الرسمي لمنصة "رادار أخبار مصر".
 مهمتك الإجابة على استفسارات المستخدم باللغة العربية الفصحى الواضحة والمباشرة استنادًا إلى الأخبار المتوفرة في <context>...</context>.
 
-قواعد صارمة للإجابة والتنسيق:
-1. اعتمد فقط على المعلومات والوقائع والتصريحات الواردة في <context>، ولا تخترع أي معلومات من خارجها.
-2. نظّم الإجابة في نقاط واضحة ومتباعدة؛ اجعل كل خبر في سطر مستقل يبدأ بنقطة [رقم المرجع] واسم الصحيفة ثم ملخص الوقائع.
-3. تجنب تمامًا المقدمات الإنشائية والعبارات المكررة مثل "الخبر الأول يتحدث عن" أو "خبر رقم 1". ادخل في صلب الخبر مباشرة.
-4. إذا كان السؤال مقارنة بين محافظتين أو صحيفتين، اعرض ما يخص كل جهة بنقاط مستقلة ثم وضّح أوجه الاتفاق أو الاختلاف.
-5. إذا لم تجد تفاصيل كافية حول السؤال، قل بوضوح: "لا تتوفر في الأخبار المرصودة حاليًا تفاصيل كافية حول هذا السؤال."
+قواعد صارمة للإجابة والتحقق:
+1. اعتمد فقط على المعلومات والوقائع والتصريحات الواردة في <context>، ولا تخترع أي معلومات من خارجها مطلقًا.
+2. نظّم الإجابة في نقاط واضحة ومباشرة تبدأ برقم المرجع واسم الصحيفة: [رقم المرجع] اسم الصحيفة: ملخص الوقائع.
+3. التزم بتعليمات المستخدم وشروط سؤاله بدقة وموضوعية:
+   - إذا سأل عن عدد الصحف أو مدى تغطيتها لواقعة معينة، اعتمد فقط على الصحف الواردة فعليًا في السياق واذكر الحقيقة دون زيادة.
+   - إذا طلب مقارنة بين جهات أو مصادر، قارن بدقة بين ما ورد فيها مع اقتباسات داعمة وموثقة.
+   - إذا سأل عما إذا كانت الأخبار لنفس الواقعة أم وقائع مختلفة، طابق بدقة بين المكان والزمان ونوع الحدث قبل الحكم.
+   - إذا طلب التفريق بين تاريخ وقوع الحدث وتاريخ نشر الخبر، فرّق بينهما صراحةً.
+   - إذا تضمن السؤال طلبًا لطرح سؤال في ختام الإجابة، التزم بطرحه في نهاية الرد تمامًا.
+4. إذا لم تجد في السياق تفاصيل كافية عن الموضوع أو المحافظة أو السلعة المطلوبة، قل بوضوح وبلا تردد: "لا تتوفر في الأخبار المرصودة حاليًا تفاصيل كافية حول هذا الموضوع"، ولا تستنتج أو تفترض معلومات من مواضيع أخرى.
+5. تجنب تمامًا المقدمات الإنشائية مثل "الخبر الأول يتحدث عن". ادخل في صلب الإجابة مباشرة.
 6. يُمنع منعًا باتًا استخدام أي حروف صينية أو أجنبية."""
 
 
@@ -77,7 +126,7 @@ def get_rag_llm_config() -> dict[str, str]:
         "base_url": os.environ.get("LLM_BASE_URL", default_url).strip(),
         "model": model_name,
         "api_key": os.environ.get("LLM_API_KEY", "ollama").strip(),
-        "timeout": os.environ.get("LLM_TIMEOUT_SECONDS", "1.8").strip(),
+        "timeout": os.environ.get("LLM_TIMEOUT_SECONDS", "25.0").strip(),
     }
 
 
@@ -137,14 +186,10 @@ def _build_chunks_for_article_row(row: dict[str, Any]) -> list[dict[str, Any]]:
     gov = (row.get("primary_governorate") or "").strip() or None
 
     # Detect governorate from title/entities if not explicitly linked
-    if not gov:
+    if not gov and category not in ("رياضة", "فن"):
         combined_text = f"{title} {entities_str} {summary}"
         for g_name in EGYPT_GOVERNORATES:
-            if g_name in combined_text:
-                # Disambiguate 'الغربية' vs 'الضفة الغربية' / 'الدول الغربية'
-                if g_name == "الغربية" and any(w in combined_text for w in ("الضفة الغربية", "الدول الغربية", "التكتلات الغربية", "العواصم الغربية", "الحكومات الغربية", "العقوبات الغربية", "القوى الغربية", "المعسكر الغربي")):
-                    if not any(k in combined_text for k in ("محافظة الغربية", "طنطا", "المحلة", "كفر الزيات", "زفتى", "سمنود", "قطور", "بسيون")):
-                        continue
+            if _is_governorate_mentioned_in_text(g_name, combined_text):
                 gov = g_name
                 break
 
@@ -368,6 +413,7 @@ def sync_rag_chunks_and_embeddings(
             cur.execute("SELECT COUNT(*) AS total, COUNT(embedding) AS embedded FROM article_chunks;")
             stat_row = dict(cur.fetchone() or {})
 
+        _GLOBAL_RAG_CACHE.clear()
         return {
             "articles_processed": len(pending_rows),
             "chunks_embedded": chunks_embedded,
@@ -398,6 +444,7 @@ _QUESTION_STOPWORDS = {
     "طب", "طيب", "لو", "سمحت", "قولي", "هات", "اعرض", "اذكر", "عاوز", "عايز",
     "واحد", "اثنين", "ثلاث", "ثلاثه", "اربع", "اربعه", "خمس", "خمسه", "ست", "سته", "سبع", "سبعه", "عشر", "عشره",
     "تريند", "التريند", "ترند", "الترند", "تريندات", "التريندات", "ترندات", "الترندات", "رائج", "الرائج", "شائع", "الشائع", "متداول", "المتداول", "ضجة", "الضجة",
+    "جارية", "جاريه", "الجارية", "الجاريه", "جاري", "الجاري", "حالية", "حاليه", "الحالية", "الحاليه", "حالي", "الحالي", "قائمة", "قائمه", "القائمة", "القائمه",
 }
 
 _ARABIC_WEEKDAYS: dict[str, int] = {
@@ -454,7 +501,7 @@ def _extract_target_date_from_question(norm_q: str) -> str | None:
 
     # 6. Arabic Weekday ('يوم الخميس' / 'الخميس اللي فات' / 'الجمعه')
     for day_name, target_wd in _ARABIC_WEEKDAYS.items():
-        if day_name in words_set or day_name in clean_q:
+        if re.search(rf"(?:^|\s)(?:و|ف|ب|ل)?(?:يوم\s+)?{re.escape(day_name)}(?:$|\s)", clean_q):
             days_ago = (today.weekday() - target_wd) % 7
             if days_ago == 0 and any(k in clean_q for k in ("فات", "الماضي", "السابق")):
                 days_ago = 7
@@ -490,6 +537,7 @@ def _extract_target_date_from_question(norm_q: str) -> str | None:
 _KNOWN_SOURCES = ("اليوم السابع", "المصري اليوم", "القاهرة 24", "الشروق", "الوطن", "مصراوي")
 
 _TOPIC_KEYWORDS = {
+    "خدمات ومرافق": ("خدمي", "خدميه", "خدمات", "مرافق", "مياه شرب", "صرف صحي", "انقطاع كهرباء", "انقطاع مياه"),
     "مستشفيات": ("مستشف", "مستشفيات", "رعايه صحيه", "تأمين صحي", "تامين صحي"),
     "امتحانات": ("امتحان", "امتحانات", "مناهج", "ثانويه عامه"),
     "تعليم": ("تعليم", "مدارس", "جامعه", "جامعات", "طلاب"),
@@ -612,16 +660,50 @@ _EGYPT_CITIES_TO_GOV: dict[str, str] = {
 }
 
 
+def _is_governorate_mentioned_in_text(gov_name: str, text: str) -> bool:
+    """Robustly detect if an Egyptian governorate is mentioned in text, avoiding false positive substring hits."""
+    if not text or not gov_name:
+        return False
+    norm_t = _normalize_arabic_for_match(text)
+    clean_t = re.sub(r"[^\w\s\u0621-\u064A]", " ", norm_t)
+    norm_g = _normalize_arabic_for_match(gov_name)
+    pattern = rf"(?:^|\s)(?:[وفبلك]?){re.escape(norm_g)}(?:$|[^\w\u0621-\u064A])"
+    if not re.search(pattern, clean_t):
+        return False
+    if gov_name == "مطروح":
+        # Disambiguate "مطروح" vs "المطروحة" / "مطروح للنقاش" / "أمر مطروح"
+        if any(p in clean_t for p in ("مطروح للنقاش", "مطروح علي", "مطروح امام", "امر مطروح", "طرحه", "النسب المطروحه")):
+            if not any(k in clean_t for k in ("محافظه مطروح", "محافظة مطروح", "مرسي مطروح", "مرسى مطروح")):
+                return False
+    elif gov_name == "قنا":
+        # Disambiguate "قنا" vs "قناة" / "قناع" / "قنابل"
+        words = clean_t.split()
+        if not any(w in ("قنا", "بقنا", "لقنا") for w in words):
+            return False
+    elif gov_name == "السويس":
+        if "قناه السويس" in clean_t and not any(k in clean_t for k in ("محافظه السويس", "محافظة السويس", "مدينه السويس", "مدينة السويس", "اهل السويس", "بالسويس", "للسويس")):
+            return False
+    elif gov_name == "الغربية":
+        if any(w in clean_t for w in ("الضفه الغربيه", "الضفة الغربية", "الدول الغربيه", "الدول الغربية", "التكتلات الغربيه", "العواصم الغربيه", "الحكومات الغربيه", "العقوبات الغربيه", "القوي الغربيه", "المعسكر الغربي", "البنغال الغربيه", "البنغال الغربية", "الاستخباراتيه الغربيه", "الاستخباراتية الغربية")):
+            if not any(k in clean_t for k in ("محافظه الغربيه", "محافظة الغربية", "طنطا", "المحله", "المحلة", "كفر الزيات", "زفتي", "زفتى", "سمنود", "قطور", "بسيون")):
+                return False
+    elif gov_name == "الشرقية":
+        if any(w in norm_t for w in ("الشرقيه للدخان", "الشرقية للدخان", "الشركه الشرقيه", "الشركة الشرقية", "الدول الشرقيه", "الجهه الشرقيه")):
+            if not any(k in norm_t for k in ("محافظه الشرقيه", "محافظة الشرقية", "الزقازيق", "العاشر من رمضان", "بلبيس", "فاقوس")):
+                return False
+    return True
+
+
 def _detect_all_governorates_from_text(norm_q: str) -> list[str]:
     """Detect all Egyptian governorates mentioned in query directly or via major cities."""
     found: list[str] = []
     for g_name in EGYPT_GOVERNORATES:
-        norm_g = _normalize_arabic_for_match(g_name)
-        if norm_g in norm_q and g_name not in found:
+        if _is_governorate_mentioned_in_text(g_name, norm_q) and g_name not in found:
             found.append(g_name)
     for city_name, g_name in _EGYPT_CITIES_TO_GOV.items():
         norm_city = _normalize_arabic_for_match(city_name)
-        if norm_city in norm_q and g_name not in found:
+        pattern = rf"(?:^|[^\w\u0621-\u064A]){re.escape(norm_city)}(?:[^\w\u0621-\u064A]|$)"
+        if re.search(pattern, norm_q) and g_name not in found:
             found.append(g_name)
     return found
 
@@ -646,17 +728,22 @@ def _extract_timeframe_days_and_date(norm_q: str) -> tuple[int | None, str | Non
     """Parse relative time windows (اليوم, منذ أمس, آخر يومين, آخر 3 أيام, هذا الأسبوع, الأسبوع الماضي, هذا الشهر, آخر 30 يوماً)."""
     today = datetime.now(CAIRO_TZ).date()
     clean_q = re.sub(r"[^\w\s-]", " ", norm_q)
-    clean_words = set(clean_q.split())
+    raw_words = clean_q.split()
+    clean_words = set(raw_words)
+    for w in raw_words:
+        stripped = re.sub(r"^(?:طب\s*و?|طيب\s*و?|و|ف)", "", w).strip()
+        if stripped:
+            clean_words.add(stripped)
 
     if any(p in clean_q for p in ("اول امبارح", "اول انبارح", "اول النبارح", "اول البارح", "اول امس", "قبل امبارح", "قبل انبارح", "قبل النبارح")):
         return 2, (today - timedelta(days=2)).isoformat()
 
-    yesterday_words = {"امس", "امبارح", "انبارح", "النبارح", "البارح", "البارحه", "البارحة"}
-    if clean_words.intersection(yesterday_words) or "منذ امس" in clean_q or "من امبارح" in clean_q:
+    yesterday_words = {"امس", "امبارح", "انبارح", "النبارح", "البارح", "البارحه", "البارحة", "وانبارح", "وامبارح", "وامس"}
+    if clean_words.intersection(yesterday_words) or any(p in clean_q for p in ("منذ امس", "من امبارح", "طب وانبارح", "طب انبارح", "طب وامبارح", "طب امبارح", "طيب وانبارح", "طيب امبارح")):
         return 2, (today - timedelta(days=1)).isoformat()
 
-    today_words = {"اليوم", "النهارده", "النهاردة", "النهاردا"}
-    if clean_words.intersection(today_words) or any(p in clean_q for p in ("خلال اليوم", "اخر 24 ساعه", "خلال 24 ساعه")):
+    today_words = {"اليوم", "النهارده", "النهاردة", "النهاردا", "واليوم", "والنهارده", "والنهاردة"}
+    if clean_words.intersection(today_words) or any(p in clean_q for p in ("خلال اليوم", "اخر 24 ساعه", "خلال 24 ساعه", "طب والنهارده", "طب النهارده")):
         return 1, today.isoformat()
 
     if any(p in clean_q for p in ("اخر يومين", "خلال يومين", "يومين")):
@@ -721,12 +808,15 @@ _CATEGORY_SYNONYMS: dict[str, tuple[str, ...]] = {
 
 
 def _detect_category_from_text(norm_q: str) -> str | None:
-    words = set(norm_q.split())
+    clean_q = re.sub(r"[^\w\s]", " ", norm_q)
+    words = set(clean_q.split())
+    stripped_words = {re.sub(r"^(?:و?ال|و)", "", w) for w in words} | words
     for canonical_cat, variants in _CATEGORY_SYNONYMS.items():
         for v in variants:
-            if " " in v and v in norm_q:
+            norm_v = _normalize_arabic_for_match(v)
+            if " " in norm_v and norm_v in clean_q:
                 return canonical_cat
-            elif " " not in v and v in words:
+            elif " " not in norm_v and (norm_v in stripped_words or f"ال{norm_v}" in words or norm_v in words or f"و{norm_v}" in words or f"وال{norm_v}" in words):
                 return canonical_cat
     return None
 
@@ -761,6 +851,8 @@ def _is_general_top_news_question(
     """True when user asks for broad top news, headlines, trending news, or most covered news with no specific sector/topic."""
     if detected_gov or detected_cat or topic_stem:
         return False
+    if any(k in norm_q for k in ("مشكل", "ازم", "أزم", "خدم", "شكاو", "مرفق", "مرافق")):
+        return False
     if len(q_tokens) == 0:
         return True
     generic_words = {
@@ -782,6 +874,8 @@ def _build_deterministic_stats_answer_html(
     governorate: str | None = None,
     category: str | None = None,
     target_date: str | None = None,
+    topic_label: str | None = None,
+    topic_stem: str | None = None,
     retrieved_examples: list[dict[str, Any]] | None = None,
 ) -> str:
     """Build an exact, 100% accurate HTML answer directly from PostgreSQL for count/statistics queries."""
@@ -819,6 +913,22 @@ def _build_deterministic_stats_answer_html(
 
             gov_cnt = 0
             gov_cat_cnt = 0
+            topic_cnt = 0
+            if topic_stem:
+                t_date_clause = "AND (published_at AT TIME ZONE 'Africa/Cairo')::date = %s::date" if target_date else ""
+                t_params: list[Any] = [f"%{topic_stem}%", f"%{topic_stem}%"]
+                if target_date:
+                    t_params.append(target_date)
+                cur.execute(
+                    f"""
+                    SELECT COUNT(DISTINCT id) AS cnt
+                    FROM analyzed_articles
+                    WHERE (title ILIKE %s OR summary_generated ILIKE %s) {t_date_clause};
+                    """,
+                    t_params,
+                )
+                topic_cnt = int((cur.fetchone() or {}).get("cnt", 0))
+
             if governorate:
                 gov_date_clause = "AND (aa.published_at AT TIME ZONE 'Africa/Cairo')::date = %s::date" if target_date else ""
                 g_params: list[Any] = [governorate]
@@ -852,7 +962,12 @@ def _build_deterministic_stats_answer_html(
     lines: list[str] = []
     date_title = f" بتاريخ <strong>{target_date}</strong>" if target_date else ""
 
-    if governorate and category:
+    if topic_stem:
+        t_title = topic_label or topic_stem
+        lines.append(
+            f"📊 <strong>عدد الأخبار المتعلقة بـ ({t_title}){date_title}:</strong> <strong>{topic_cnt} خبر</strong>."
+        )
+    elif governorate and category:
         lines.append(
             f"📊 <strong>عدد أخبار قسم ({category}) في محافظة {governorate}{date_title}:</strong> <strong>{gov_cat_cnt} خبر</strong>."
         )
@@ -877,7 +992,9 @@ def _build_deterministic_stats_answer_html(
             if not target_date or (str(item.get("published_at") or "")[:10] == target_date)
         ]
         if matching_examples:
-            if category:
+            if topic_stem:
+                lines.append(f"<br/><strong>أحدث الأخبار المتعلقة بـ ({topic_label or topic_stem}){date_title}:</strong>")
+            elif category:
                 lines.append(f"<br/><strong>أحدث أخبار قسم ({category}){date_title}:</strong>")
             elif governorate:
                 lines.append(f"<br/><strong>أحدث أخبار محافظة {governorate}{date_title}:</strong>")
@@ -887,6 +1004,106 @@ def _build_deterministic_stats_answer_html(
                 lines.append(f"• <strong>[{idx}] {item['source_name']}:</strong> {item['title']}")
 
     return "<br/>".join(lines)
+
+
+def _fetch_high_impact_highlights(target_date: str | None = None, limit: int = 5) -> dict[str, Any]:
+    """Retrieve verified high-impact and trending national news with priority scoring and story deduplication."""
+    with psycopg2.connect(**get_db_config(), cursor_factory=RealDictCursor, connect_timeout=10) as conn:
+        with conn.cursor() as cur:
+            date_clause = "AND (aa.published_at AT TIME ZONE 'Africa/Cairo')::date = %s::date" if target_date else ""
+            params: list[Any] = [target_date] if target_date else []
+            base_sql = f"""
+                SELECT
+                    aa.id AS article_id,
+                    aa.title,
+                    aa.summary_generated,
+                    aa.source_name,
+                    aa.category,
+                    aa.tone,
+                    aa.published_at,
+                    aa.canonical_url,
+                    ac.governorate,
+                    ac.chunk_text,
+                    hia.alert_reason,
+                    hia.impact_level,
+                    cia.impact_scope,
+                    (CASE WHEN cia.impact_scope = 'قومي' THEN 25 ELSE 0 END) +
+                    (CASE WHEN hia.impact_level = 'حرج' THEN 30 WHEN hia.impact_level = 'مرتفع' THEN 15 ELSE 0 END) +
+                    (CASE WHEN hia.alert_reason LIKE '%%4 مواقع%%' THEN 25 WHEN hia.alert_reason LIKE '%%3 مواقع%%' THEN 15 ELSE 5 END) AS priority_score
+                FROM high_impact_alerts hia
+                JOIN analyzed_articles aa ON aa.canonical_url = hia.canonical_url
+                JOIN article_chunks ac ON ac.article_id = aa.id AND ac.chunk_index = 0
+                LEFT JOIN country_impact_assessments cia ON cia.article_id = aa.id AND cia.country_code = 'EG'
+                WHERE hia.impact_level IN ('حرج', 'مرتفع')
+                  AND aa.category NOT IN ('فن', 'أخرى', 'رياضة')
+                  AND (cia.impact_scope IS NULL OR cia.impact_scope IN ('قومي', 'إقليمي'))
+                  AND aa.title NOT ILIKE '%%شخصية اليوم%%'
+                  AND aa.title NOT ILIKE '%%تفسير حلم%%'
+                  AND aa.title NOT ILIKE '%%أسعار الخضراوات%%'
+                  AND aa.title NOT ILIKE '%%أسعار البقوليات%%'
+                  AND aa.title NOT ILIKE '%%الكنيست%%'
+                  AND aa.title NOT ILIKE '%%دراجة نارية%%'
+                  AND aa.title NOT ILIKE '%%توك توك%%'
+                  {date_clause}
+                ORDER BY priority_score DESC, aa.published_at DESC
+                LIMIT 30;
+            """
+            cur.execute(base_sql, params)
+            alert_rows = cur.fetchall()
+
+            # Relaxation: If 0 alerts for target_date, fetch most recent high-impact alerts
+            if not alert_rows and target_date:
+                relax_sql = base_sql.replace(date_clause, "")
+                cur.execute(relax_sql, [])
+                alert_rows = cur.fetchall()
+
+    # Deduplicate stories by signature so multiple sources for the same event don't repeat
+    seen_story_keys: set[str] = set()
+    distinct_rows: list[dict[str, Any]] = []
+    for r in alert_rows:
+        norm = _normalize_arabic_for_match(r["title"])
+        clean_words = [w for w in norm.split() if len(w) > 2 and w not in ("محافظ", "وزير", "رئيس", "خلال", "اليوم", "مصر", "الدولة")][:3]
+        sig = " ".join(sorted(clean_words))
+        if sig in seen_story_keys:
+            continue
+        seen_story_keys.add(sig)
+        distinct_rows.append(r)
+        if len(distinct_rows) >= limit:
+            break
+
+    bullet_lines = []
+    sources = []
+    cited_indices = []
+    for idx, r in enumerate(distinct_rows, start=1):
+        src = r.get("source_name") or "المصدر"
+        title = (r.get("title") or "").strip()
+        summary = (r.get("summary_generated") or "").strip()
+        summary = re.sub(r"(?:المشكلات المرصودة|المشكلة|الحدث|المرحلة|الكيانات):.*$", "", summary, flags=re.M).strip()
+        first_sent = re.split(r"[.\n]", summary)[0].strip() if summary else title
+        claim = first_sent if len(first_sent) > 20 else title
+        bullet_lines.append(f"• <strong>[{idx}] {src}:</strong> {claim}")
+        cited_indices.append(idx)
+        sources.append({
+            "ref_index": idx,
+            "cited_in_answer": True,
+            "article_id": r["article_id"],
+            "title": r["title"],
+            "source_name": r["source_name"],
+            "category": r["category"],
+            "tone": r.get("tone") or "خبري موضوعي",
+            "governorate": r["governorate"],
+            "published_at": str(r.get("published_at") or "")[:16],
+            "supporting_quote": summary[:200] if summary else title,
+            "canonical_url": r["canonical_url"],
+            "score": round(float(r.get("priority_score") or 1.0), 3),
+        })
+
+    return {
+        "answer": "<br/><br/>".join(bullet_lines) if bullet_lines else "لا توجد تنبيهات عاجلة مسجلة حاليًا.",
+        "sources": sources,
+        "cited_indices": cited_indices,
+        "chunks_used": len(sources),
+    }
 
 
 def _build_governorate_comparison_stats(
@@ -924,6 +1141,7 @@ def _build_governorate_comparison_stats(
                         aa.summary_generated,
                         aa.source_name,
                         aa.category,
+                        aa.tone,
                         aa.published_at,
                         aa.canonical_url,
                         ac.governorate,
@@ -997,14 +1215,56 @@ def _extract_query_tokens(question: str) -> set[str]:
 
 _GENERIC_QUERY_MODIFIERS = {
     "سعر", "اسعار", "أسعار", "غلاء", "تكلفه", "تكلفة",
-    "اخبار", "أخبار", "خبر", "مستجدات", "تفاصيل", "تطورات", "احداث", "أحداث", "حدث",
-    "ايه", "إيه", "ما", "ماذا", "كام", "كم", "عن", "في", "اليوم", "النهارده", "امس", "أمس", "امبارح",
-    "انبارح", "النبارح", "البارح", "البارحه", "غدا", "غداً", "بكره", "بكرا", "الان", "الآن", "حاليا", "اخر", "آخر", "اهم", "أهم", "ابرز", "أبرز", "جديد",
+    "اخبار", "أخبار", "خبر", "مستجدات", "تفاصيل", "تطورات", "تطور", "احداث", "أحداث", "حدث", "وقائع",
+    "ايه", "إيه", "ما", "ماذا", "كام", "كم", "عن", "في", "فى", "اليوم", "النهارده", "امس", "أمس", "امبارح",
+    "انبارح", "النبارح", "البارح", "البارحه", "وانبارح", "وامبارح", "وامس", "واليوم", "والنهارده", "والنهاردة",
+    "غدا", "غداً", "بكره", "بكرا", "الان", "الآن", "حاليا", "اخر", "آخر", "اهم", "أهم", "ابرز", "أبرز", "جديد",
     "سوق", "محافظة", "محافظه", "مصر", "تقرير", "بيان", "تصريح", "رسمي", "رسميه",
     "قسم", "قطاع", "مجال",
     "عدد", "عددها", "عددهم", "اعداد", "أعداد", "اعدادها", "أعدادها", "اعدادهم", "أعدادهم", "اجمالي", "إجمالي", "احصائيات", "إحصائيات", "احصائيه", "إحصائية",
     "تريند", "التريند", "ترند", "الترند", "تريندات", "التريندات", "ترندات", "الترندات",
     "رائج", "الرائج", "شائع", "الشائع", "متداول", "المتداول", "ضجة", "الضجة",
+    "طب", "طيب", "طبقا", "يعني", "كدا", "كده", "حاجه", "حاجة", "وان", "فين", "ليه", "ازاي", "ازيك",
+    "قارن", "مقارنة", "مقارنه", "واذكر", "اذكر", "ذكر", "تاريخ", "مصدر", "مصدره", "ومصدره", "مصادر",
+    "يوم", "ايام", "أيام", "اسبوع", "أسبوع", "شهر", "خلال", "عبر",
+    "فرق", "فرّق", "تفرقة", "بين", "مشروع", "مشروعات", "مشاريع",
+    "هل", "غطت", "تغطية", "تغطيه", "صحف", "صحيفة", "صحيفه", "جرائد", "جريدة", "جريده", "ادمج", "دمج", "اوجه", "أوجه",
+    "اختلاف", "الاختلاف", "فروق", "قرار", "قرارات", "وقرار", "وقرارات", "قانون", "قوانين", "وقانون", "وقوانين",
+    "مرسوم", "مراسيم", "اجراء", "إجراء", "اجراءات", "إجراءات", "توجيه", "توجيهات", "حكومي", "حكومية", "حكوميه", "متعلق", "متعلقة", "متعلقه",
+    "اربط", "ربط", "باقتباس", "اقتباس", "اقتباسات", "يدعم", "يدعمها", "يدعمه", "اعرض", "عرض",
+    "واقعة", "واقعه", "وقائع", "حادثة", "حادثه", "حادثتين", "مختلفتين", "مختلفة", "مختلفه", "نفسها", "عينها",
+    "خبرين", "مقالين", "تفاصيل", "معلومات", "بيانات", "اسال", "اسأل", "وبعد", "الرد", "رد", "نشر", "منشور", "وقوع",
+    "فيه", "كان", "يكون", "جديد", "سؤال", "اطرح", "بعد", "واحدة", "واحده", "معينة", "معينه", "إحدى", "احدى",
+    "نفسها", "عينها", "مختلفة", "مختلفه", "مختلفتين", "واقعة", "واقعه", "تتحدث", "وضح", "وضّح",
+    "خدمية", "خدميه", "الخدمية", "الخدميه", "خدمات", "الخدمات", "خدمي", "الخدمي",
+    "مشكلة", "مشكله", "مشكلات", "مشاكل", "المشكلة", "المشكله", "المشكلات", "المشاكل",
+    "ازمة", "أزمة", "ازمات", "أزمات", "الازمة", "الأزمة", "الازمات", "الأزمات", "ازمه", "أزمه",
+    "مرصود", "مرصودة", "مرصوده", "المرصود", "المرصودة", "المرصوده", "مرصودات", "المرصودات",
+    "قضية", "قضيه", "قضايا", "القضية", "القضيه", "القضايا",
+    "ملف", "ملفات", "الملف", "الملفات",
+    "تحدي", "تحديات", "التحدي", "التحديات",
+    "صعوبة", "صعوبات", "الصعوبة", "الصعوبات",
+    "مرافق", "المرافق", "مرفق", "المرفق",
+    "اقتصاد", "الاقتصاد", "والاقتصاد", "واقتصاد", "اقتصادي", "اقتصادية", "اقتصاديه",
+    "سياسة", "السياسة", "والسياسة", "وسياسة", "سياسي", "سياسية", "سياسيه",
+    "صحة", "الصحة", "والصحة", "وصحة", "صحي", "صحية", "صحيه",
+    "تعليم", "التعليم", "والتعليم", "وتعليم", "تعليمي", "تعليمية", "تعليميه",
+    "رياضة", "الرياضة", "والرياضة", "ورياضة", "رياضي", "رياضية", "رياضيه",
+    "حوادث", "الحوادث", "والحوادث", "وحوادث",
+    "فن", "الفن", "والفن", "وفن", "فني", "فنية", "فنيه",
+    "تكنولوجيا", "التكنولوجيا", "والتكنولوجيا", "وتكنولوجيا", "تقنية", "التقنية",
+    "مجتمع", "المجتمع", "والمجتمع", "ومجتمع",
+    "جارية", "جاريه", "الجارية", "الجاريه", "جاري", "الجاري", "وجارية", "وجاريه", "والجارية", "والجاريه",
+    "حالية", "حاليه", "الحالية", "الحاليه", "حالي", "الحالي", "وحالية", "وحاليه", "والحالية", "والحاليه",
+    "مستمرة", "مستمره", "المستمرة", "المستمره", "مستمر", "المستمر",
+    "قائمة", "قائمه", "القائمة", "القائمه", "قائم", "القائم",
+    "مقامة", "مقامه", "المقامة", "المقامه", "مقام", "المقام",
+    "منفذة", "منفذه", "المنفذة", "المنفذه", "منفذ", "المنفذ",
+    "جديدة", "جديده", "الجديدة", "الجديده", "الجديد",
+    "قديمة", "قديمه", "القديمة", "القديمه", "القديم",
+    "أخيرة", "أخيره", "الأخيرة", "الأخيره", "اخيرة", "اخيره", "الاخيرة", "الاخيره",
+    "مقبلة", "مقبله", "المقبلة", "المقبله", "مقبل", "المقبل",
+    "قادمة", "قادمه", "القادمة", "القادمه", "قادم", "القادم",
 }
 
 
@@ -1029,12 +1289,18 @@ _COLLOQUIAL_COMMODITY_SYNONYMS: dict[str, tuple[str, ...]] = {
     "كفته": ("كفته", "كفتة"),
     "كفتة": ("كفته", "كفتة"),
     "كفت": ("كفته", "كفتة"),
-    "محله": ("المحله", "بالمحله", "للمحله"),
-    "المحله": ("المحله", "بالمحله", "للمحله"),
-    "المحلة": ("المحله", "بالمحله", "للمحله"),
+    "مياه": ("مياه", "ميه", "شرب"),
+    "ميه": ("مياه", "ميه", "شرب"),
+    "طرق": ("طرق", "طريق", "رصف", "محاور"),
+    "طريق": ("طرق", "طريق", "رصف", "محاور"),
     "دولار": ("دولار",),
     "ذهب": ("ذهب",),
     "بنزين": ("بنزين", "سولار", "وقود"),
+    "بنوك": ("بنوك", "بنك", "مصرف", "مصارف", "مركزي", "المركزي", "فائدة", "قروض", "شهادات", "تمويل"),
+    "بنك": ("بنوك", "بنك", "مصرف", "مصارف", "مركزي", "المركزي", "فائدة", "قروض", "شهادات", "تمويل"),
+    "مصرف": ("بنوك", "بنك", "مصرف", "مصارف", "مركزي"),
+    "بورصة": ("بورصة", "بورصه", "اسهم", "أسهم", "سندات", "تداول"),
+    "بورصه": ("بورصة", "بورصه", "اسهم", "أسهم", "سندات", "تداول"),
 }
 
 
@@ -1043,18 +1309,15 @@ def _extract_subject_stems(tokens: set[str]) -> list[str]:
     stems: list[str] = []
     for t in tokens:
         clean = _normalize_arabic_for_match(t)
-        clean = re.sub(r"^(?:ال|لل|بال|فال|كال)", "", clean)
+        clean = re.sub(r"^(?:و?ال|و?لل|و?بال|و?فال|و?كال|و|ف)", "", clean).strip()
         expanded = False
         for key, variants in _COLLOQUIAL_COMMODITY_SYNONYMS.items():
             norm_key = _normalize_arabic_for_match(key)
-            clean_key = re.sub(r"^(?:ال|لل|بال|فال|كال)", "", norm_key)
+            clean_key = re.sub(r"^(?:و?ال|و?لل|و?بال|و?فال|و?كال|و|ف)", "", norm_key).strip()
             if clean == clean_key or clean_key in clean:
                 for v in variants:
                     norm_v = _normalize_arabic_for_match(v)
-                    if norm_v.startswith(("ال", "بال", "لل")):
-                        v_stem = norm_v
-                    else:
-                        v_stem = re.sub(r"^(?:ال|لل|بال|فال|كال)", "", norm_v)
+                    v_stem = re.sub(r"^(?:و?ال|و?لل|و?بال|و?فال|و?كال|و|ف)", "", norm_v).strip()
                     if len(v_stem) >= 3 and v_stem not in stems:
                         stems.append(v_stem)
                 expanded = True
@@ -1076,6 +1339,7 @@ def hybrid_retrieve(
     days: int | None = None,
     top_k: int = 6,
     candidate_limit: int = CANDIDATE_POOL_LIMIT,
+    target_date: str | None = None,
 ) -> list[dict[str, Any]]:
     """Retrieve top_k relevant articles using 70% Dense Vector Similarity + 30% Arabic Lexical & Metadata Boosts."""
     norm_q = _normalize_arabic_for_match(question)
@@ -1087,10 +1351,22 @@ def hybrid_retrieve(
 
     tf_days, tf_date = _extract_timeframe_days_and_date(norm_q)
     eff_days = days if (days and int(days) > 0) else tf_days
-    target_date = _extract_target_date_from_question(norm_q) or tf_date
+    target_date = target_date or _extract_target_date_from_question(norm_q) or tf_date
 
+    loc_tokens = (
+        {_normalize_arabic_for_match(g) for g in EGYPT_GOVERNORATES}
+        | {_normalize_arabic_for_match(c) for c in _EGYPT_CITIES_TO_GOV.keys()}
+        | {"المحله", "المحلة", "طنطا", "المنصوره", "المنصورة", "الكبري", "كبري", "قنا", "غربية", "الغربية", "دقهلية", "الدقهلية"}
+    )
     q_tokens = _extract_query_tokens(question)
-    specific_tokens = {t for t in q_tokens if t not in _GENERIC_QUERY_MODIFIERS and len(t) > 1}
+    specific_tokens = {
+        t for t in q_tokens
+        if t not in _GENERIC_QUERY_MODIFIERS
+        and re.sub(r"^(?:و?ال|و?لل|و?بال|و?فال|و?كال|و|ف|طب\s*و?|طيب\s*و?)", "", t).strip() not in _GENERIC_QUERY_MODIFIERS
+        and t not in loc_tokens
+        and re.sub(r"^(?:و?ال|و?لل|و?بال|و?فال|و?كال|و|ف|ب|ل)", "", t).strip() not in loc_tokens
+        and len(t) > 1
+    }
     subject_stems = _extract_subject_stems(specific_tokens)
 
     # Exclude category and topic words from q_tokens if detected so broad category queries rank cleanly
@@ -1119,6 +1395,7 @@ def hybrid_retrieve(
                         aa.summary_generated,
                         aa.source_name,
                         aa.category,
+                        aa.tone,
                         aa.published_at,
                         aa.canonical_url,
                         ac.governorate,
@@ -1169,30 +1446,36 @@ def hybrid_retrieve(
         except Exception:
             q_vec = []
 
-    clauses: list[str] = ["1=1"]
-    params: list[Any] = []
-    if detected_gov and not subject_stems:
-        clauses.append("ac.governorate = %s")
-        params.append(detected_gov)
-    elif detected_gov and subject_stems:
-        stem_ors = " OR ".join(["ac.chunk_text ILIKE %s OR aa.title ILIKE %s" for _ in subject_stems])
-        clauses.append(f"(ac.governorate = %s OR {stem_ors})")
-        params.append(detected_gov)
-        for s in subject_stems:
-            params.extend([f"%{s}%", f"%{s}%"])
-    if detected_source:
-        clauses.append("ac.source_name ILIKE %s")
-        params.append(f"%{detected_source}%")
-    if category or (detected_cat and not q_tokens and not topic_stem):
-        clauses.append("ac.category = %s")
-        params.append(category or detected_cat)
-    if target_date:
-        clauses.append("(ac.published_at AT TIME ZONE 'Africa/Cairo')::date = %s::date")
-        params.append(target_date)
-    elif eff_days and int(eff_days) > 0:
-        clauses.append("COALESCE(ac.published_at, ac.updated_at) >= NOW() - (%s * INTERVAL '1 day')")
-        params.append(int(eff_days))
-    where_sql = f"WHERE {' AND '.join(clauses)}"
+    def _build_where_sql(include_date: bool = True, include_gov: bool = True) -> tuple[str, list[Any]]:
+        c_list = ["1=1"]
+        p_list: list[Any] = []
+        if include_gov and detected_gov:
+            c_list.append("ac.governorate = %s")
+            p_list.append(detected_gov)
+        if subject_stems:
+            stem_ors = " OR ".join(["(ac.chunk_text ILIKE %s OR aa.title ILIKE %s)" for _ in subject_stems])
+            c_list.append(f"({stem_ors})")
+            for s in subject_stems:
+                p_list.extend([f"%{s}%", f"%{s}%"])
+        if any(p in norm_q for p in ("في محافظه واحده", "في محافظة واحدة", "في محافظة واحده", "في محافظه واحدة")) or any(w in norm_q for w in ("مشكله خدميه", "مشكلة خدمية", "خدميه", "خدمية", "خدمات", "مرافق")):
+            c_list.append("ac.governorate IS NOT NULL")
+            c_list.append("ac.category NOT IN ('تكنولوجيا', 'فن', 'رياضة')")
+        if detected_source:
+            c_list.append("ac.source_name ILIKE %s")
+            p_list.append(f"%{detected_source}%")
+        if category or (detected_cat and not q_tokens and not topic_stem):
+            c_list.append("ac.category = %s")
+            p_list.append(category or detected_cat)
+        if include_date:
+            if target_date:
+                c_list.append("(ac.published_at AT TIME ZONE 'Africa/Cairo')::date = %s::date")
+                p_list.append(target_date)
+            elif eff_days and int(eff_days) > 0:
+                c_list.append("COALESCE(ac.published_at, ac.updated_at) >= NOW() - (%s * INTERVAL '1 day')")
+                p_list.append(int(eff_days))
+        return f"WHERE {' AND '.join(c_list)}", p_list
+
+    where_sql, params = _build_where_sql(include_date=True, include_gov=True)
 
     # SQL pre-ranking so bounded candidate pool always retains lexically/geographically matching chunks
     ts_query_terms = " | ".join(sorted(q_tokens)) if q_tokens else ""
@@ -1215,8 +1498,12 @@ def hybrid_retrieve(
     if detected_cat:
         order_exprs.append("(CASE WHEN ac.category = %s THEN 1 ELSE 0 END) DESC")
         order_params.append(detected_cat)
-    if any(k in norm_q for k in ("مشكل", "ازم", "خطور", "نقص", "تلوث", "انقطاع")):
-        order_exprs.append("(CASE WHEN ac.chunk_type = 'event_and_issues' THEN 1 ELSE 0 END) DESC")
+    if any(k in norm_q for k in ("مشكل", "ازم", "أزم", "خطور", "نقص", "تلوث", "انقطاع")):
+        order_exprs.append("""(CASE 
+            WHEN EXISTS (SELECT 1 FROM article_issues ai WHERE ai.article_id = ac.article_id) THEN 2
+            WHEN ac.chunk_type = 'event_and_issues' THEN 1 
+            ELSE 0 
+        END) DESC""")
     if ts_query_terms:
         order_exprs.append("ts_rank_cd(to_tsvector('simple', ac.chunk_text), to_tsquery('simple', %s)) DESC")
         order_params.append(ts_query_terms)
@@ -1240,7 +1527,8 @@ def hybrid_retrieve(
                     ac.embedding,
                     aa.title,
                     aa.summary_generated,
-                    aa.canonical_url
+                    aa.canonical_url,
+                    aa.tone
                 FROM article_chunks ac
                 JOIN analyzed_articles aa ON aa.id = ac.article_id
                 {where_sql}
@@ -1251,6 +1539,47 @@ def hybrid_retrieve(
             )
             rows = cur.fetchall()
 
+    # Strict Subject Integrity: If the query specified a specific subject (e.g. water, roads, kofta) and 0 chunks match,
+    # DO NOT relax into unrelated articles (drugs, space weapons, accidents, etc.)
+    if not rows and subject_stems:
+        return []
+
+    # Filter Relaxation: If strict pre-filters returned 0 chunks, relax progressively (Strict max 2 bounded steps)
+    relaxation_type: str | None = None
+    if not rows and target_date:
+        relaxation_type = "date_relaxed"
+        logger.info("Zero chunks found with target_date=%s; relaxing date filter (Max 2 steps)", target_date)
+        where_sql_rel1, params_rel1 = _build_where_sql(include_date=False, include_gov=True)
+        with psycopg2.connect(**get_db_config(), cursor_factory=RealDictCursor, connect_timeout=10) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT
+                        ac.id AS chunk_id,
+                        ac.article_id,
+                        ac.chunk_index,
+                        ac.chunk_type,
+                        ac.chunk_text,
+                        ac.governorate,
+                        ac.category,
+                        ac.source_name,
+                        ac.published_at,
+                        ac.embedding,
+                        aa.title,
+                        aa.summary_generated,
+                        aa.canonical_url,
+                        aa.tone
+                    FROM article_chunks ac
+                    JOIN analyzed_articles aa ON aa.id = ac.article_id
+                    {where_sql_rel1}
+                    ORDER BY {order_sql}
+                    LIMIT %s;
+                    """,
+                    params_rel1 + order_params + [max(60, int(candidate_limit))],
+                )
+                rows = cur.fetchall()
+
+    # Bounded termination: If still no rows, terminate immediately
     if not rows:
         return []
 
@@ -1309,10 +1638,33 @@ def hybrid_retrieve(
         base_rrf = rrf_by_chunk.get(cid, 0.0)
         t_tokens = _tokenize_for_grounding(r["title"])
         title_align = (len(q_tokens & t_tokens) / max(1, len(q_tokens))) if q_tokens else 0.0
+        s_tokens = _tokenize_for_grounding(r.get("summary_generated") or "")
+        summary_align = (len(q_tokens & s_tokens) / max(1, len(q_tokens))) if q_tokens else 0.0
+        c_tokens = _tokenize_for_grounding(r["chunk_text"])
+        chunk_align = (len(q_tokens & c_tokens) / max(1, len(q_tokens))) if q_tokens else 0.0
+
+        norm_title = _normalize_arabic_for_match(r["title"])
+        norm_summary = _normalize_arabic_for_match(r.get("summary_generated") or "")
+        exact_phrase_match = 1.0 if (len(norm_q) > 4 and (norm_q in norm_title or norm_q in norm_summary)) else 0.0
         topic_match = 1.0 if (topic_stem and (topic_stem in r["chunk_text"] or topic_stem in r["title"])) else 0.0
         gov_match = 1.0 if (detected_gov and r.get("governorate") == detected_gov) else 0.0
 
-        combined_score = (base_rrf * 10.0) + (title_align * 0.25) + (topic_match * 0.35) + (gov_match * 0.25)
+        tone_val = r.get("tone") or ""
+        tone_score = 0.15 if ("موضوعي" in tone_val or "تحليلي" in tone_val) else 0.0
+        src_val = r.get("source_name") or ""
+        source_score = 0.10 if (src_val in ("اليوم السابع", "المصري اليوم", "القاهرة 24", "الشروق", "مصراوي")) else 0.0
+
+        combined_score = (
+            (base_rrf * 10.0)
+            + (title_align * 0.35)
+            + (summary_align * 0.25)
+            + (chunk_align * 0.20)
+            + (exact_phrase_match * 0.50)
+            + (topic_match * 0.35)
+            + (gov_match * 0.30)
+            + tone_score
+            + source_score
+        )
         if subject_stems:
             c_text_clean = re.sub(r"^الاثر:\s*\(.*?\)\s*—\s*", "", r["chunk_text"], flags=re.I)
             c_text_norm = _normalize_arabic_for_match(c_text_clean)
@@ -1330,11 +1682,14 @@ def hybrid_retrieve(
                 "summary_generated": r["summary_generated"],
                 "source_name": r["source_name"],
                 "category": r["category"],
+                "tone": r.get("tone") or "خبري موضوعي",
                 "governorate": r["governorate"],
+                "tone": r.get("tone") or "خبري موضوعي",
                 "published_at": str(r["published_at"] or "")[:16],
                 "canonical_url": r["canonical_url"],
                 "score": combined_score,
                 "chunks": [r["chunk_text"]],
+                "relaxation_type": relaxation_type,
             }
         else:
             existing = scored_by_article[aid]
@@ -1392,49 +1747,65 @@ def _validate_inline_citations(text: str, max_idx: int) -> tuple[str, list[int]]
     return validated, cited
 
 
-def answer_question_with_rag(
+def _execute_answer_question_with_rag(
     question: str,
     governorate: str | None = None,
     category: str | None = None,
     days: int | None = None,
     top_k: int = 5,
+    history: list[dict[str, str]] | None = None,
+    stream_callback: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
-    """Run full Hybrid RAG: retrieve top chunks and generate a grounded Arabic answer via Qwen."""
-    # 0. Intent Gatekeeper: Route greetings, out-of-domain, or ambiguous queries instantly without DB retrieval
-    intent = classify_user_intent(question)
-    if intent == "greeting":
+    """Internal core engine: Two-stage routing, strict candidate filtering, precision re-ranking, and grounded generation."""
+    from src.query_router import route_query
+
+    # Step 1: Two-Stage Query Router & Intent Classifier
+    routed = route_query(question, history=history, allow_llm_fallback=True)
+
+    # 1. Chitchat & Conversational fillers (e.g. "عاوز", "أهلاً", "شكراً", "من أنت")
+    if routed.intent == "chitchat":
         return {
-            "answer": "أهلًا بك! أنا المساعد الذكي لمنصة «رادار أخبار مصر». جاهز لمساعدتك في استعراض أحدث الأخبار المرصودة، قرارات الحكومة، ومتابعة تطورات الأحداث والخدمات في مختلف المحافظات المصرية.",
-            "sources": [],
-            "cited_indices": [],
-            "chunks_used": 0,
-        }
-    if intent == "out_of_domain":
-        return {
-            "answer": "أنا مساعد ذكي متخصص في رصد وتوثيق الأخبار والشأن المحلي المصري. يسعدني إجابتك عن أي سؤال يخص القرارات الحكومية، أخبار المحافظات، أسعار السلع، أو المشروعات التنموية في مصر.",
-            "sources": [],
-            "cited_indices": [],
-            "chunks_used": 0,
-        }
-    if intent == "ambiguous_clarification":
-        return {
-            "answer": "أهلًا بك! هل تود استعراض أبرز الأخبار العامة العاجلة لليوم في مصر، أم تبحث عن محافظة محددة (مثل القاهرة أو الإسكندرية) أو قطاع معين (كالصحة، التعليم، أو الاقتصاد)؟",
+            "answer": routed.chitchat_reply or "أهلًا بك! أنا المساعد الذكي لمنصة «رادار أخبار مصر». كيف يمكنني مساعدتك اليوم؟",
             "sources": [],
             "cited_indices": [],
             "chunks_used": 0,
         }
 
-    norm_q = _normalize_arabic_for_match(question)
+    core_question = re.split(r"(?:وبعد\s*(?:الرد|ذلك)?|ثم)\s*(?:اسال|اسأل|اطرح):?", question)[0].strip()
+    follow_up_match = re.search(r"(?:وبعد\s*(?:الرد|ذلك)?|ثم)\s*(?:اسال|اسأل|اطرح):?\s*([^\n\r]+)", question)
+    follow_up_q = follow_up_match.group(1).strip() if follow_up_match else None
+
+    norm_q = _normalize_arabic_for_match(core_question)
     detected_govs = _detect_all_governorates_from_text(norm_q)
-    detected_gov = governorate or (detected_govs[0] if detected_govs else None)
-    detected_cat = category or _detect_category_from_text(norm_q)
-    topic_label, topic_stem = _detect_topic_stem(norm_q)
-    is_stats_q = _is_count_or_stats_question(norm_q)
-    effective_k = _extract_requested_item_count(norm_q, default_k=top_k) if not is_stats_q else top_k
-    q_tokens = _extract_query_tokens(question)
-    specific_tokens = {t for t in q_tokens if t not in _GENERIC_QUERY_MODIFIERS and len(t) > 1}
+    routed_gov = routed.governorate if (routed.governorate in EGYPT_GOVERNORATES) else None
+    detected_gov = governorate or routed_gov or (detected_govs[0] if detected_govs else None)
+    if detected_gov and detected_gov not in EGYPT_GOVERNORATES:
+        detected_gov = None
+    detected_cat = category or routed.category or _detect_category_from_text(norm_q)
+    target_date = _extract_target_date_from_question(norm_q) or routed.target_date
+    topic_label = routed.topic
+    topic_stem = routed.topic_stem
+    if not topic_stem and not topic_label:
+        topic_label, topic_stem = _detect_topic_stem(norm_q)
 
-    # 1. Comparison count question between two governorates (e.g. 'أي محافظة لديها أخبار أكثر: القاهرة أم البحيرة؟')
+    is_stats_q = (routed.intent == "count_stats") or _is_count_or_stats_question(norm_q)
+    effective_k = _extract_requested_item_count(norm_q, default_k=top_k) if not is_stats_q else top_k
+
+    # 2. High-Impact & Trend News (only when NO specific governorate or category is requested)
+    if routed.intent == "high_impact" and not detected_gov and not detected_cat:
+        return _fetch_high_impact_highlights(target_date=target_date, limit=effective_k)
+
+    # 3. Comparison count question between two governorates
+    if routed.intent == "comparison" and len(routed.govs_comparison) >= 2:
+        comp_html, comp_sources, comp_cited = _build_governorate_comparison_stats(
+            routed.govs_comparison[0], routed.govs_comparison[1], topic_label, topic_stem
+        )
+        return {
+            "answer": comp_html,
+            "sources": comp_sources,
+            "cited_indices": comp_cited,
+            "chunks_used": len(comp_sources),
+        }
     if _is_comparison_count_question(norm_q, detected_govs):
         comp_html, comp_sources, comp_cited = _build_governorate_comparison_stats(
             detected_govs[0], detected_govs[1], topic_label, topic_stem
@@ -1446,35 +1817,136 @@ def answer_question_with_rag(
             "chunks_used": len(comp_sources),
         }
 
-    # 2. Comparative narrative between two governorates (e.g. 'قارن ما نُشر عن المستشفيات في القاهرة والبحيرة')
+    # 4. For count / statistics queries, return exact deterministic PostgreSQL counts directly
+    if is_stats_q:
+        html_answer = _build_deterministic_stats_answer_html(
+            governorate=detected_gov,
+            category=detected_cat,
+            target_date=target_date,
+            topic_label=topic_label,
+            topic_stem=topic_stem,
+            retrieved_examples=None,
+        )
+        return {
+            "answer": html_answer,
+            "sources": [],
+            "cited_indices": [],
+            "chunks_used": 0,
+        }
+
+    # 5. Determine query tokens & specific content tokens
+    loc_tokens = (
+        {_normalize_arabic_for_match(g) for g in EGYPT_GOVERNORATES}
+        | {_normalize_arabic_for_match(c) for c in _EGYPT_CITIES_TO_GOV.keys()}
+        | {"المحله", "المحلة", "طنطا", "المنصوره", "المنصورة", "الكبري", "كبري", "قنا", "غربية", "الغربية", "دقهلية", "الدقهلية"}
+    )
+    q_tokens = _extract_query_tokens(question)
+    specific_tokens = {
+        t for t in q_tokens 
+        if t not in _GENERIC_QUERY_MODIFIERS 
+        and re.sub(r"^(?:و?ال|و?لل|و?بال|و?فال|و?كال|و|ف|طب\s*و?|طيب\s*و?)", "", t).strip() not in _GENERIC_QUERY_MODIFIERS 
+        and t not in loc_tokens
+        and re.sub(r"^(?:و?ال|و?لل|و?بال|و?فال|و?كال|و|ف|ب|ل)", "", t).strip() not in loc_tokens
+        and len(t) > 1
+    }
+
+    # If query is a short follow-up without substantive content tokens (e.g. "طب وانبارح؟", "وإمبارح؟", "وفي طنطا؟"),
+    # construct the retrieval question from the carried-over context
+    search_q = core_question
+    if not specific_tokens:
+        ctx_items = []
+        if routed.city:
+            ctx_items.append(routed.city)
+        elif detected_gov:
+            ctx_items.append(detected_gov)
+        if topic_label:
+            ctx_items.append(topic_label)
+        if detected_cat:
+            ctx_items.append(detected_cat)
+        if ctx_items:
+            search_q = f"أخبار {' '.join(ctx_items)}"
+
+    # 6. Comparative narrative between two governorates vs standard retrieval
     is_comparative = "قارن" in norm_q and len(detected_govs) >= 2
     if is_comparative:
         ret_a = hybrid_retrieve(question=question, governorate=detected_govs[0], top_k=2)
         ret_b = hybrid_retrieve(question=question, governorate=detected_govs[1], top_k=2)
         retrieved = ret_a + ret_b
     else:
+        top_k_req = 15 if any(p in norm_q for p in ("في محافظه واحده", "في محافظة واحدة", "في محافظة واحده", "في محافظه واحدة")) else effective_k
         retrieved = hybrid_retrieve(
-            question=question,
-            governorate=governorate,
-            category=category,
-            days=days,
-            top_k=effective_k,
+            question=search_q,
+            governorate=detected_gov,
+            category=detected_cat,
+            days=days or routed.timeframe_days,
+            top_k=top_k_req,
+            target_date=target_date,
         )
 
-    if not retrieved and not is_stats_q:
-        target_date = _extract_target_date_from_question(norm_q)
-        date_msg = f" بتاريخ <strong>{target_date}</strong>" if target_date else ""
-        if specific_tokens:
+    # If the user specifically asks for news in one single governorate ("في محافظة واحدة"):
+    if any(p in norm_q for p in ("في محافظه واحده", "في محافظة واحدة", "في محافظة واحده", "في محافظه واحدة")):
+        gov_groups: dict[str, list[Any]] = {}
+        for it in retrieved:
+            g = it.get("governorate")
+            if g and g in EGYPT_GOVERNORATES:
+                gov_groups.setdefault(g, []).append(it)
+        for g, items in gov_groups.items():
+            if len(items) >= 2:
+                retrieved = items[:2]
+                break
+
+    # 7. Score & Semantic Match Threshold:
+    # If the user asked about a specific subject (e.g. "كفتة", "بتنجان") and NONE of the retrieved articles match,
+    # DO NOT return unrelated gold or dollar prices!
+    if specific_tokens and retrieved:
+        # Check if specific tokens are category terms when a category was detected
+        cat_tokens = set()
+        if detected_cat:
+            for v in _CATEGORY_SYNONYMS.get(detected_cat, ()):
+                norm_v = _normalize_arabic_for_match(v)
+                cat_tokens.add(norm_v)
+                cat_tokens.add(re.sub(r"^(?:و?ال|و?لل|و?بال|و?فال|و?كال|و|ف)", "", norm_v).strip())
+
+        remaining_tokens = {
+            t for t in specific_tokens
+            if re.sub(r"^(?:و?ال|و?لل|و?بال|و?فال|و?كال|و|ف)", "", _normalize_arabic_for_match(t)).strip() not in cat_tokens
+        }
+
+        subject_stems = _extract_subject_stems(remaining_tokens if remaining_tokens else specific_tokens)
+        primary_stems = [s for s in subject_stems if s not in ("زمالك", "اهلي", "نادي", "مصر", "قاهره", "جيزه")] or subject_stems
+
+        def _stem_matches(stem: str, text: str) -> bool:
+            if len(stem) <= 4:
+                return bool(re.search(rf"(?:^|\s)ال?{re.escape(stem)}(?:$|\s)", text))
+            return stem in text
+
+        # Filter candidate pool so only articles genuinely mentioning the primary subject are presented
+        valid_retrieved = [
+            item for item in retrieved
+            if (detected_cat and item.get("category") == detected_cat and not remaining_tokens)
+            or any(
+                _stem_matches(s, _normalize_arabic_for_match(item["title"]))
+                or _stem_matches(s, _normalize_arabic_for_match(item.get("summary_generated") or ""))
+                for s in primary_stems
+            )
+        ]
+
+        if not valid_retrieved:
             sub_display = " ".join(specific_tokens)
-            gov_note = f" في محافظة <strong>{detected_gov}</strong>" if detected_gov else ""
             return {
-                "answer": f"عذرًا، لم أجد أخبارًا أو بيانات رسمية مسجلة{date_msg}{gov_note} بشأن «{sub_display}». يمكنك تجربة تاريخ آخر أو توسيع نطاق البحث.",
+                "answer": f"عذرًا، لم تتضمن الأخبار والتقارير المرصودة مؤخرًا أي بيانات أو تفاصيل حول «{sub_display}». يمكنك الاستفسار عن موضوعات أخرى أو أسعار السلع التموينية الأساسية والعملات المتوفرة.",
                 "sources": [],
                 "cited_indices": [],
                 "chunks_used": 0,
             }
+        retrieved = valid_retrieved
+
+    if not retrieved:
+        date_msg = f" بتاريخ <strong>{target_date}</strong>" if target_date else ""
+        sub_display = " ".join(specific_tokens) if specific_tokens else (routed.city or topic_label or detected_cat or "الأخبار المطلوبة")
+        gov_note = f" في محافظة <strong>{detected_gov}</strong>" if detected_gov else ""
         return {
-            "answer": f"لم أجد أخبارًا مسجلة{date_msg} مطابقة لهذا السؤال؛ جرّب تاريخًا آخر أو توسيع نطاق البحث.",
+            "answer": f"عذرًا، لم أجد أخبارًا أو بيانات رسمية مسجلة{date_msg}{gov_note} بشأن «{sub_display}». يمكنك تجربة تاريخ آخر أو توسيع نطاق البحث.",
             "sources": [],
             "cited_indices": [],
             "chunks_used": 0,
@@ -1500,6 +1972,7 @@ def answer_question_with_rag(
                 "title": r["title"],
                 "source_name": r["source_name"],
                 "category": r["category"],
+                "tone": r.get("tone") or "خبري موضوعي",
                 "governorate": r["governorate"],
                 "published_at": r.get("published_at"),
                 "supporting_quote": _extract_verbatim_supporting_quote(r, q_tokens),
@@ -1514,6 +1987,16 @@ def answer_question_with_rag(
             "cited_indices": cited_indices,
             "chunks_used": len(retrieved),
         }
+
+    # Relaxation disclosure: If filters were relaxed, inform user explicitly so they know news is historical
+    relaxation_type = retrieved[0].get("relaxation_type") if retrieved else None
+    disclaimer = ""
+    if relaxation_type == "date_relaxed":
+        loc_str = f" عن {detected_gov}" if detected_gov else ""
+        disclaimer = f"ℹ️ <em>لم ترصد الأخبار اليوم مستجدات جديدة{loc_str}، وإليك أحدث الأخبار المرصودة عنها سابقاً:</em><br/><br/>"
+    elif relaxation_type == "gov_relaxed":
+        loc_str = f" عن {detected_gov}" if detected_gov else ""
+        disclaimer = f"ℹ️ <em>لم تتوفر أخبار محلية خاصة{loc_str}، وإليك أحدث التغطيات المرصودة عامة:</em><br/><br/>"
 
     # Fast path for general top news queries (returns instant verified facts in < 0.2s without LLM latency):
     is_general_top = _is_general_top_news_question(q_tokens, detected_gov, detected_cat, topic_stem, norm_q)
@@ -1530,7 +2013,7 @@ def answer_question_with_rag(
             claim = first_sent if len(first_sent) > 20 else title
             bullet_lines.append(f"• <strong>[{idx}] {src}:</strong> {claim}")
             cited_indices.append(idx)
-        fast_html = "<br/><br/>".join(bullet_lines)
+        fast_html = disclaimer + "<br/><br/>".join(bullet_lines)
         sources = [
             {
                 "ref_index": idx,
@@ -1539,6 +2022,7 @@ def answer_question_with_rag(
                 "title": r["title"],
                 "source_name": r["source_name"],
                 "category": r["category"],
+                "tone": r.get("tone") or "خبري موضوعي",
                 "governorate": r["governorate"],
                 "published_at": r.get("published_at"),
                 "supporting_quote": (r.get("summary_generated") or r["title"])[:200],
@@ -1570,7 +2054,8 @@ def answer_question_with_rag(
     else:
         task_instruction = (
             f"سؤال المستخدم: {question}\n"
-            f"أجب باللغة العربية الفصحى في نقاط واضحة وموجزة بالاعتماد على البيانات والأخبار أعلاه فقط، مع وضع رقم المرجع [1] أو [2] واسم الصحيفة أمام كل خبر:"
+            f"أجب باللغة العربية الفصحى بدقة والتزام تام بالبيانات والأخبار أعلاه فقط وفق تعليمات المستخدم، "
+            f"مع وضع رقم المرجع [1] أو [2] واسم الصحيفة أمام كل خبر تدعمه:"
         )
 
     user_prompt = f"<context>\n{context_str}\n</context>\n\n{task_instruction}"
@@ -1583,28 +2068,54 @@ def answer_question_with_rag(
             {"role": "user", "content": user_prompt},
         ],
         "temperature": 0.1,
-        "max_tokens": 150,
+        "max_tokens": 260,
         "options": {
-            "num_predict": 150,
-            "num_ctx": 1024,
+            "num_predict": 260,
+            "num_ctx": 2048,
             "temperature": 0.1,
         },
         "keep_alive": "24h",
     }
 
     def _do_rag_llm() -> str:
-        req = urllib.request.Request(
-            cfg["base_url"],
-            data=json.dumps(payload).encode("utf-8"),
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {cfg['api_key']}",
-            },
-            method="POST",
-        )
-        with urllib.request.urlopen(req, timeout=float(cfg["timeout"])) as resp:
-            resp_data = json.loads(resp.read().decode("utf-8"))
-        return resp_data["choices"][0]["message"]["content"]
+        if stream_callback:
+            payload["stream"] = True
+            req = urllib.request.Request(
+                cfg["base_url"],
+                data=json.dumps(payload).encode("utf-8"),
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {cfg['api_key']}",
+                },
+                method="POST",
+            )
+            raw_chunks: list[str] = []
+            with urllib.request.urlopen(req, timeout=float(cfg["timeout"])) as resp:
+                for line in resp:
+                    line_str = line.decode("utf-8").strip()
+                    if line_str.startswith("data: ") and line_str != "data: [DONE]":
+                        try:
+                            resp_json = json.loads(line_str[6:])
+                            delta = resp_json["choices"][0]["delta"].get("content", "")
+                            if delta:
+                                raw_chunks.append(delta)
+                                stream_callback(delta)
+                        except Exception:
+                            continue
+            return "".join(raw_chunks)
+        else:
+            req = urllib.request.Request(
+                cfg["base_url"],
+                data=json.dumps(payload).encode("utf-8"),
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {cfg['api_key']}",
+                },
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=float(cfg["timeout"])) as resp:
+                resp_data = json.loads(resp.read().decode("utf-8"))
+            return resp_data["choices"][0]["message"]["content"]
 
     clean_answer = ""
     try:
@@ -1633,7 +2144,7 @@ def answer_question_with_rag(
                 quote = f"لم ترصد التقارير الاقتصادية مؤخرًا أسعارًا رسمية لـ «{sub_display}»، بينما تضمنت الأخبار الرقابية: {title}"
             fallback_lines.append(f"• <strong>[{idx}] {src}:</strong> {quote}")
         return {
-            "answer": "<br/><br/>".join(fallback_lines),
+            "answer": disclaimer + "<br/><br/>".join(fallback_lines),
             "sources": [
                 {
                     "ref_index": idx,
@@ -1642,6 +2153,7 @@ def answer_question_with_rag(
                     "title": r["title"],
                     "source_name": r["source_name"],
                     "category": r["category"],
+                    "tone": r.get("tone") or "خبري موضوعي",
                     "governorate": r["governorate"],
                     "published_at": r.get("published_at"),
                     "supporting_quote": (r.get("summary_generated") or r["title"])[:200],
@@ -1654,12 +2166,37 @@ def answer_question_with_rag(
             "chunks_used": len(retrieved[:effective_k]),
         }
 
+    # Pre-Response Integrity Guardrail:
+    # If the answer indicates no news or data found ("لم أجد", "عذرًا", "لا تتوفر في الأخبار"),
+    # enforce an empty source list and strip any dangling reference brackets [N].
+    negative_signals = (
+        "لم أجد", "لم اجد", "عذرًا", "عذرا", "لا تتوفر في الأخبار", "لا تتوفر في الاخبار",
+        "لا تتوفر في التقارير", "لا تتوفر في المقالات", "لم تتضمن الأخبار", "لم تتضمن الاخبار",
+        "لم ترصد الأخبار", "لم ترصد الاخبار", "لا توجد أخبار", "لا توجد اخبار", "لم يتم العثور"
+    )
+    is_negative = any(sig in clean_answer for sig in negative_signals)
+    if is_negative:
+        cleaned_neg = re.sub(r"\[\d+\]", "", clean_answer)
+        cleaned_neg = re.sub(r"•\s*<strong>\[\d+\]</strong>.*?(?:<br/>|$)", "", cleaned_neg)
+        cleaned_neg = re.sub(r"(?:<br\s*/?>)+", "<br/>", cleaned_neg).strip()
+        return {
+            "answer": cleaned_neg or clean_answer,
+            "sources": [],
+            "cited_indices": [],
+            "chunks_used": 0,
+        }
+
     # 1. Clean redundant boilerplate phrases (e.g. 'الخبر الأول يتحدث عن' or 'خبر رقم 1')
     cleaned_body = re.sub(
         r"(?:الخبر الأول|الخبر الثاني|الخبر الثالث|الخبر الرابع|الخبر الخامس|الخبر السادس|خبر رقم \[\d+\]|خبر رقم \d+)\s*(?:يتحدث عن|وهو عن|عن)?\s*",
         "",
         clean_answer,
     )
+    cleaned_body = re.sub(r"الحدث\s*\([^)]*\)\s*:\s*", "", cleaned_body)
+    cleaned_body = re.sub(r"\(المرحلة:\s*[^)]*\)\s*:\s*", "", cleaned_body)
+    cleaned_body = re.sub(r"\[رقم المرجع\s*•?\s*<strong>\[\d+\]</strong>\]", "", cleaned_body)
+    cleaned_body = re.sub(r"\[رقم المرجع\s*\d+\]", "", cleaned_body)
+    cleaned_body = re.sub(r"\[رقم المرعج\s*\d+\]", "", cleaned_body)
     # 2. Convert markdown bold
     html_answer = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", cleaned_body)
     # 3. Validate inline citations [N]
@@ -1670,6 +2207,12 @@ def answer_question_with_rag(
     if html_answer.startswith("<strong>["):
         html_answer = "• " + html_answer
     html_answer = html_answer.replace("\n", "<br/>")
+    if disclaimer:
+        html_answer = disclaimer + html_answer
+    if follow_up_q:
+        clean_fq = follow_up_q.strip(" «»\"':")
+        if clean_fq and clean_fq not in html_answer:
+            html_answer = f"{html_answer}<br/><br/>{clean_fq}"
 
     q_tokens = _extract_query_tokens(question)
     all_sources = [
@@ -1680,6 +2223,7 @@ def answer_question_with_rag(
             "title": r["title"],
             "source_name": r["source_name"],
             "category": r["category"],
+            "tone": r.get("tone") or "خبري موضوعي",
             "governorate": r["governorate"],
             "published_at": r.get("published_at"),
             "supporting_quote": _extract_verbatim_supporting_quote(r, q_tokens),
@@ -1699,6 +2243,119 @@ def answer_question_with_rag(
         "cited_indices": cited_indices,
         "chunks_used": len(retrieved),
     }
+
+
+def answer_question_with_rag(
+    question: str,
+    governorate: str | None = None,
+    category: str | None = None,
+    days: int | None = None,
+    top_k: int = 5,
+    history: list[dict[str, str]] | None = None,
+) -> dict[str, Any]:
+    """Run full Adaptive RAG: In-memory cache, Two-Stage Router, pre-filtered retrieval, and grounded synthesis."""
+    cached = _GLOBAL_RAG_CACHE.get(question, governorate, category)
+    if cached is not None:
+        return cached
+
+    result = _execute_answer_question_with_rag(
+        question=question,
+        governorate=governorate,
+        category=category,
+        days=days,
+        top_k=top_k,
+        history=history,
+    )
+    _GLOBAL_RAG_CACHE.set(question, result, governorate, category)
+    return result
+
+
+def answer_question_with_rag_stream(
+    question: str,
+    governorate: str | None = None,
+    category: str | None = None,
+    days: int | None = None,
+    top_k: int = 5,
+    history: list[dict[str, str]] | None = None,
+) -> Generator[str, None, None]:
+    """Stream RAG response via Server-Sent Events (SSE) with instant token delivery."""
+    # 1. Check in-memory cache (sub-millisecond instant return)
+    cached = _GLOBAL_RAG_CACHE.get(question, governorate, category)
+    if cached is not None:
+        ans = cached.get("answer", "")
+        words = ans.split(" ")
+        for i, w in enumerate(words):
+            chunk = (w + " ") if i < len(words) - 1 else w
+            yield f"data: {json.dumps({'type': 'token', 'content': chunk}, ensure_ascii=False)}\n\n"
+        yield f"data: {json.dumps({'type': 'final', 'answer': ans, 'sources': cached.get('sources', []), 'cited_indices': cached.get('cited_indices', [])}, ensure_ascii=False)}\n\n"
+        yield 'data: {"type": "done"}\n\n'
+        return
+
+    # 2. Yield instant initial status ping to avoid HTTP timeout and notify client immediately
+    yield f"data: {json.dumps({'type': 'status', 'stage': 'searching', 'message': 'جاري البحث في الأخبار...'}, ensure_ascii=False)}\n\n"
+
+    # 3. Start execution in background worker thread with token queue
+    token_queue: queue.Queue[Any] = queue.Queue()
+    done_sentinel = object()
+    res_container: dict[str, Any] = {}
+
+    def _worker() -> None:
+        try:
+            res = _execute_answer_question_with_rag(
+                question=question,
+                governorate=governorate,
+                category=category,
+                days=days,
+                top_k=top_k,
+                history=history,
+                stream_callback=lambda delta: token_queue.put(delta),
+            )
+            res_container["res"] = res
+            _GLOBAL_RAG_CACHE.set(question, res, governorate, category)
+        except Exception as exc:
+            logger.error("Error in RAG stream worker: %s", exc, exc_info=True)
+            res_container["err"] = str(exc)
+        finally:
+            token_queue.put(done_sentinel)
+
+    worker_thread = threading.Thread(target=_worker, daemon=True)
+    worker_thread.start()
+
+    tokens_emitted = 0
+    while True:
+        try:
+            item = token_queue.get(timeout=35.0)
+        except queue.Empty:
+            break
+
+        if item is done_sentinel:
+            break
+
+        if isinstance(item, str):
+            tokens_emitted += 1
+            yield f"data: {json.dumps({'type': 'token', 'content': item}, ensure_ascii=False)}\n\n"
+
+    worker_thread.join(timeout=3.0)
+
+    res = res_container.get("res")
+    if not res:
+        err_msg = res_container.get("err") or "عذرًا، حدث خطأ أثناء تجهيز الإجابة."
+        yield f"data: {json.dumps({'type': 'token', 'content': err_msg}, ensure_ascii=False)}\n\n"
+        yield f"data: {json.dumps({'type': 'final', 'answer': err_msg, 'sources': [], 'cited_indices': []}, ensure_ascii=False)}\n\n"
+        yield 'data: {"type": "done"}\n\n'
+        return
+
+    # If no tokens were streamed (e.g. fast-path stats, chitchat, or instant search):
+    # stream the answer text words cleanly
+    ans = res.get("answer", "")
+    if tokens_emitted == 0 and ans:
+        words = ans.split(" ")
+        for i, w in enumerate(words):
+            chunk = (w + " ") if i < len(words) - 1 else w
+            yield f"data: {json.dumps({'type': 'token', 'content': chunk}, ensure_ascii=False)}\n\n"
+
+    yield f"data: {json.dumps({'type': 'final', 'answer': ans, 'sources': res.get('sources', []), 'cited_indices': res.get('cited_indices', [])}, ensure_ascii=False)}\n\n"
+    yield 'data: {"type": "done"}\n\n'
 
 
 if __name__ == "__main__":

@@ -3,6 +3,12 @@ __pycache__/
 *.py[cod]
 *.log
 .DS_Store
+.vscode/
 data/
 logs/
 plugins/
+*.tmp
+*.csv
+*.csv.tmp
+*.txt
+*.jsonl
